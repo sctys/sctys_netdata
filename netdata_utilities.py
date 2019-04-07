@@ -1,6 +1,7 @@
 import time
 import logging
 import os
+import json
 import asyncio
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
@@ -46,6 +47,20 @@ async def async_retry(func, *params, checker, html_checker, num_retry, sleep_tim
         else:
             run_success = True
     return response
+
+
+def check_api_element_exist(data, key, value):
+    if isinstance(data, str):
+        data = json.loads(data)
+    elif isinstance(data, bytes):
+        data = json.load(data)
+    if key in data and data[key] == value:
+        return {'status': True}
+    else:
+        if key not in data:
+            return {'status': False, 'message': 'Key {} not exist'.format(key)}
+        elif data[key] != value:
+            return {'status': False, 'message': 'Key {} does not have value {}'.format(key, value)}
 
 
 def check_html_element_exist(html, element, min_times=1):
