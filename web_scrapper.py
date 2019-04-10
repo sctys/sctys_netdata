@@ -246,7 +246,7 @@ class WebScrapper(WebScrapperSetting):
         self.io.save_file(html, file_path, file_name, 'html', verbose, **kwargs)
 
     def save_api(self, data, file_path, file_name, verbose=False, **kwargs):
-        self.io.save_file(data, file_path, file_name, 'json', verbose, **kwargs)
+        self.io.save_file(data, file_path, file_name, 'txt', verbose, **kwargs)
 
     @ staticmethod
     def match_url_file_name(url_list, file_name_list):
@@ -262,7 +262,7 @@ class WebScrapper(WebScrapperSetting):
         data_list = [(rep['url'], rep['message']) for rep in response if rep['ok']]
         url_list, api_list = ([data[index] for data in data_list] for index in range(2))
         file_name_list = [file_name_dict[url] for url in url_list]
-        self.io.save_multiple_files(mode, api_list, file_path, file_name_list, 'json', verbose, **kwargs)
+        self.io.save_multiple_files(mode, api_list, file_path, file_name_list, 'txt', verbose, **kwargs)
 
     def load_multiple_html(self, url_list, static=True, html_checker=None, asyn=True):
         self.clear_fail_load_list()
