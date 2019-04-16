@@ -10,6 +10,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 from netdata_setting import WebScrapperSetting
 
+
 def set_logger(logger_path, logger_file_name, logger_level, logger_name):
     logger_file = os.path.join(logger_path, logger_file_name)
     logging.basicConfig(level=getattr(logging, logger_level),
