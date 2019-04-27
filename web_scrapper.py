@@ -43,6 +43,9 @@ class WebScrapper(WebScrapperSetting):
         if not asyn:
             options = getattr(webdriver, '{}Options'.format(BROWSER.capitalize()))()
             options.add_argument('--headless')
+            if BROWSER == 'chrome':
+                options.add_argument('--no-sandbox')
+                options.add_argument('--disable-gpu')
             self.driver = getattr(webdriver, BROWSER.capitalize())(**{'{}_options'.format(BROWSER): options})
         else:
             self.service = getattr(services, self.WEB_SCRAPPER_SERVICE_REF[BROWSER])()
@@ -104,7 +107,7 @@ class WebScrapper(WebScrapperSetting):
         return response
 
     @ staticmethod
-    def _extend_url(url, params):
+    def extend_url(url, params):
         if params is None or params == {} or not isinstance(params, dict):
             return url
         else:
@@ -116,11 +119,11 @@ class WebScrapper(WebScrapperSetting):
         try:
             data = self.session.get(url, params=params)
             if data.status_code == 200:
-                response = {'ok': True, 'message': data.html.html, 'url': self._extend_url(url, params)}
+                response = {'ok': True, 'message': data.html.html, 'url': self.extend_url(url, params)}
             else:
-                response = {'ok': False, 'error': data.reason, 'url': self._extend_url(url, params)}
+                response = {'ok': False, 'error': data.reason, 'url': self.extend_url(url, params)}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'url': self._extend_url(url, params)}
+            response = {'ok': False, 'error': e, 'url': self.extend_url(url, params)}
         return response
 
     async def _async_api_get(self, url, params=None):
@@ -129,11 +132,11 @@ class WebScrapper(WebScrapperSetting):
         try:
             data = await self.asession.get(url, params=params)
             if data.status_code == 200:
-                response = {'ok': True, 'message': data.html.html, 'url': self._extend_url(url, params)}
+                response = {'ok': True, 'message': data.html.html, 'url': self.extend_url(url, params)}
             else:
-                response = {'ok': False, 'error': data.reason, 'url': self._extend_url(url, params)}
+                response = {'ok': False, 'error': data.reason, 'url': self.extend_url(url, params)}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'url': self._extend_url(url, params)}
+            response = {'ok': False, 'error': e, 'url': self.extend_url(url, params)}
         return response
 
     def _message_checker(self, response, html_checker=None):
@@ -168,6 +171,7 @@ class WebScrapper(WebScrapperSetting):
         if len(self.fail_load_html) > 0:
             file_name = 'web_scrapper_fail_load_list_{}.pkl'.format(int(time.time()))
             self.io.save_file(self.fail_load_html, TEMP_PATH, file_name, 'joblib')
+            self.io.notify_fail_file(True)
 
     def load_fail_load_list(self, file_name):
         self.fail_load_html = self.io.load_file(TEMP_PATH, file_name, 'joblib')
@@ -272,13 +276,19 @@ class WebScrapper(WebScrapperSetting):
 
     def save_html(self, html, file_path, file_name, verbose=False, **kwargs):
         self.io.save_file(html, file_path, file_name, 'html', verbose, **kwargs)
+        self.io.notify_fail_file(True)
 
     def save_api(self, data, file_path, file_name, verbose=False, **kwargs):
         self.io.save_file(data, file_path, file_name, 'txt', verbose, **kwargs)
+        self.io.notify_fail_file(True)
 
     @ staticmethod
     def match_url_file_name(url_list, file_name_list):
         return {url: file_name for url, file_name in zip(url_list, file_name_list)}
+
+    def match_params_file_name(self, url, params, file_name_list):
+        url_list = [self.extend_url(url, param) for param in params]
+        return self.match_url_file_name(url_list, file_name_list)
 
     def save_multiple_html(self, mode, response, file_path, file_name_dict, verbose=False, **kwargs):
         data_list = [(rep['url'], rep['message']) for rep in response if rep['ok']]
