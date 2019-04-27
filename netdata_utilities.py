@@ -32,6 +32,8 @@ def retry(func, *params, checker, html_checker, num_retry, sleep_time, logger):
             count += 1
         else:
             run_success = True
+    if not run_success and response['ok']:
+        response = {'ok': False, 'error': checker(response, html_checker)['message'], 'url': response['url']}
     return response
 
 
@@ -47,15 +49,17 @@ async def async_retry(func, *params, checker, html_checker, num_retry, sleep_tim
             count += 1
         else:
             run_success = True
+    if not run_success and response['ok']:
+        response = {'ok': False, 'error': checker(response, html_checker)['message'], 'url': response['url']}
     return response
 
 
-def check_api_element_exist(data, key, value):
+def check_api_element_exist(data, key, value=None):
     if isinstance(data, str):
         data = json.loads(data)
     elif isinstance(data, bytes):
         data = json.load(data)
-    if key in data and data[key] == value:
+    if key in data and (value is None or data[key] == value):
         return {'status': True}
     else:
         if key not in data:
@@ -64,6 +68,12 @@ def check_api_element_exist(data, key, value):
             return {'status': False, 'message': 'Key {} does not have value {}'.format(key, value)}
 
 
+def check_api_text_exist(data, text):
+    if text in data:
+        return {'status': True}
+    else:
+        return {'status': False, 'message': 'Text {} does not exist'.format(text)}
+
 def check_html_element_exist(html, element, min_times=1):
     soup = BeautifulSoup(html, 'html.parser')
     if len(soup.select(element)) >= min_times:
@@ -71,6 +81,19 @@ def check_html_element_exist(html, element, min_times=1):
     else:
         return {'status': False, 'message': 'Element {} not appearing at least {} times'.format(element, min_times)}
 
+
+def check_html_text_exist(html, text, min_times=1):
+    soup = BeautifulSoup(html, 'html.parser')
+    txt = soup.get_text()
+    if text in txt:
+        return {'status': True}
+    else:
+        return {'status': False, 'message': 'Text {} not appearing at least {} times'.format(element, min_times)}
+
+def wait_for_element(driver, load_element):
+    WebDriverWait(driver, WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT).until(
+        EC.visibility_of_element_located((By.CSS_SELECTOR, load_element)))
+    return driver
 
 def select_dropdown_box(driver, dropdown_box_element, option_index, option_type, load_element):
     WebDriverWait(driver, WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT).until(
