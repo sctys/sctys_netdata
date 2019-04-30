@@ -31,8 +31,6 @@ class WebScrapper(WebScrapperSetting):
         self.sema = asyncio.Semaphore(self.WEB_SCRAPPER_SEMAPHORE)
         self.io = FileIO()
         self.fail_load_html = []
-        self.get_browser()
-        self.get_browser(True)
 
     def set_logger(self):
         self.logger = set_logger(self.WEB_SCRAPPER_LOGGER_PATH, self.WEB_SCRAPPER_LOGGER_FILE,
@@ -216,10 +214,8 @@ class WebScrapper(WebScrapperSetting):
         return response
 
     def browser_simulator(self, url, extra_action=None, *args, html_checker=None, time_sleep=0, verbose=False):
-        # if extra_action is None:
-        #     extra_action = self._dummy_action
-        # if html_checker is None:
-        #     html_checker = self._dummy_checker
+        if self.driver is None:
+            self.get_browser()
         response = retry(self._browse_html, url, extra_action, *args, checker=self._message_checker,
                          html_checker=html_checker,
                          num_retry=self.WEB_SCRAPPER_NUM_RETRY, sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP,
@@ -234,10 +230,8 @@ class WebScrapper(WebScrapperSetting):
 
     async def async_browser_simulator(self, url, async_extra_action=None, *args, html_checker=None, time_sleep=0,
                                       verbose=False):
-        # if async_extra_action is None:
-        #     async_extra_action = self._async_dummy_action
-        # if html_checker is None:
-        #     html_checker = self._dummy_checker
+        if self.browser is None:
+            self.get_browser(True)
         response = await async_retry(self._async_browse_html, url, async_extra_action, *args,
                                      checker=self._message_checker, html_checker=html_checker,
                                      num_retry=self.WEB_SCRAPPER_NUM_RETRY, sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP,
