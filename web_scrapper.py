@@ -111,11 +111,11 @@ class WebScrapper(WebScrapperSetting):
         else:
             return '?'.join([url, urllib.parse.urlencode(params)])
 
-    def _api_get(self, url, params=None):
+    def _api_call(self, method, url, params=None, **kwargs):
         if params is None:
             params = {}
         try:
-            data = self.session.get(url, params=params)
+            data = getattr(self.session, method)(url, params=params, **kwargs)
             if data.status_code == 200:
                 response = {'ok': True, 'message': data.html.html, 'url': self.extend_url(url, params)}
             else:
@@ -124,11 +124,11 @@ class WebScrapper(WebScrapperSetting):
             response = {'ok': False, 'error': e, 'url': self.extend_url(url, params)}
         return response
 
-    async def _async_api_get(self, url, params=None):
+    async def _async_api_call(self, method, url, params=None, **kwargs):
         if params is None:
             params = {}
         try:
-            data = await self.asession.get(url, params=params)
+            data = await getattr(self.asession, method)(url, params=params, **kwargs)
             if data.status_code == 200:
                 response = {'ok': True, 'message': data.html.html, 'url': self.extend_url(url, params)}
             else:
@@ -244,10 +244,10 @@ class WebScrapper(WebScrapperSetting):
         await asyncio.sleep(time_sleep)
         return response
 
-    def api_get(self, url, params=None, api_checker=None, time_sleep=0, verbose=False):
-        response = retry(self._api_get, url, params, checker=self._message_checker, html_checker=api_checker,
+    def api_call(self, method, url, params=None, api_checker=None, time_sleep=0, verbose=False, **kwargs):
+        response = retry(self._api_call, method, url, params, checker=self._message_checker, html_checker=api_checker,
                          num_retry=self.WEB_SCRAPPER_NUM_RETRY, sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP,
-                         logger=self.logger)
+                         logger=self.logger, **kwargs)
         if verbose:
             self.logger.debug('{} loaded'.format(response['url']))
         if not response['ok']:
@@ -256,10 +256,10 @@ class WebScrapper(WebScrapperSetting):
         time.sleep(time_sleep)
         return response
 
-    async def async_api_get(self, url, params=None, api_checker=None, time_sleep=0, verbose=False):
-        response = await async_retry(self._async_api_get, url, params, checker=self._message_checker,
+    async def async_api_call(self, method, url, params=None, api_checker=None, time_sleep=0, verbose=False, **kwargs):
+        response = await async_retry(self._async_api_call, method, url, params, checker=self._message_checker,
                                      html_checker=api_checker, num_retry=self.WEB_SCRAPPER_NUM_RETRY,
-                                     sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP, logger=self.logger)
+                                     sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP, logger=self.logger, **kwargs)
         if verbose:
             self.logger.debug('{} loaded'.format(response['url']))
         if not response['ok']:
@@ -333,22 +333,26 @@ class WebScrapper(WebScrapperSetting):
         self.save_fail_load_list()
         return response
 
-    def load_multiple_api(self, url_list, params=None, api_checker=None, asyn=True, time_sleep=0, verbose=False):
+    def load_multiple_api(self, method, url_list, params=None, api_checker=None, asyn=True, time_sleep=0, verbose=False,
+                          **kwargs):
         self.clear_fail_load_list()
         if asyn:
             if not isinstance(params, list):
-                tasks = [asyncio.ensure_future(self.async_api_get(url, params, api_checker, time_sleep, verbose))
+                tasks = [asyncio.ensure_future(self.async_api_call(method, url, params, api_checker, time_sleep,
+                                                                   verbose, **kwargs))
                          for url in url_list]
             else:
-                tasks = [asyncio.ensure_future(self.async_api_get(url, param, api_checker, time_sleep, verbose))
+                tasks = [asyncio.ensure_future(self.async_api_call(method, url, param, api_checker, time_sleep, verbose,
+                                                                   **kwargs))
                          for url, param in zip(url_list, params)]
             response = self.loop.run_until_complete(asyncio.gather(*tasks))
         else:
             if not isinstance(params, list):
-                response = list(map(lambda url: self.api_get(url, params, api_checker, time_sleep, verbose), url_list))
+                response = list(map(lambda url: self.api_call(method, url, params, api_checker, time_sleep, verbose,
+                                                              **kwargs), url_list))
             else:
-                response = list(map(lambda url, param: self.api_get(url, param, api_checker, time_sleep, verbose),
-                                    url_list, params))
+                response = list(map(lambda url, param: self.api_call(method, url, param, api_checker, time_sleep,
+                                                                     verbose, **kwargs), url_list, params))
         self.notify_fail_html(True)
         self.save_fail_load_list()
         return response
@@ -372,12 +376,12 @@ class WebScrapper(WebScrapperSetting):
                                              verbose=verbose)
         return response
 
-    def retry_load_multiple_api(self, api_checker=None, file_name=None, asyn=True, verbose=False):
+    def retry_load_multiple_api(self, method, api_checker=None, file_name=None, asyn=True, verbose=False, **kwargs):
         if file_name is not None:
             self.load_fail_load_list(file_name)
         fail_load_html = [(fail['url'], fail['params']) for fail in self.fail_load_html]
         url_list, params = ([fail[index] for fail in fail_load_html] for index in range(2))
-        response = self.load_multiple_api(url_list, params, api_checker, asyn, verbose)
+        response = self.load_multiple_api(method, url_list, params, api_checker, asyn, verbose, **kwargs)
         return response
 
     def clear_temp_fail_html(self):
@@ -457,12 +461,12 @@ def test_browse_html(url, file_name, extra_action=None, *args, html_checker=None
         print('Unable to browse {}. {}'.format(url, response['error']))
 
 
-def test_call_api(url, file_name, params=None, api_checker=None, asyn=False):
+def test_call_api(url, method, file_name, params=None, api_checker=None, asyn=False):
     ws = WebScrapper()
     if asyn:
-        response = ws.loop.run_until_complete(ws.async_api_get(url, params, api_checker))
+        response = ws.loop.run_until_complete(ws.async_api_call(method, url, params, api_checker))
     else:
-        response = ws.api_get(url, params, api_checker)
+        response = ws.api_call(method, url, params, api_checker)
     if response['ok']:
         ws.save_api(response['message'], os.getcwd(), file_name)
     else:
@@ -483,9 +487,9 @@ def test_browse_multiple_html(url_list, file_name_list, extra_action=None, *args
     ws.save_multiple_html(ws.WEB_SCRAPPER_FILE_SAVE_MODE, response, os.getcwd(), file_name_dict)
 
 
-def test_load_multiple_api(url_list, file_name_list, params=None, api_checker=None, asyn=False):
+def test_load_multiple_api(method, url_list, file_name_list, params=None, api_checker=None, asyn=False):
     ws = WebScrapper()
-    response = ws.load_multiple_api(url_list, params, api_checker, asyn)
+    response = ws.load_multiple_api(method, url_list, params, api_checker, asyn)
     url_list = [res['url'] for res in response]
     file_name_dict = ws.match_url_file_name(url_list, file_name_list)
     ws.save_multiple_api(ws.WEB_SCRAPPER_FILE_SAVE_MODE, response, os.getcwd(), file_name_dict)
@@ -531,7 +535,7 @@ def test_fail_browse(fail_url_list, *args, fail_file_name_list, extra_action=Non
     ws.clear_temp_fail_html()
 
 
-def test_fail_api(fail_url_list, fail_params_list, fail_file_name_list, api_checker=None):
+def test_fail_api(method, fail_url_list, fail_params_list, fail_file_name_list, api_checker=None):
     ws = WebScrapper()
     ws.fail_load_html = [{'url': fail_url, 'params': fail_param} for fail_url, fail_param
                          in zip(fail_url_list, fail_params_list)]
@@ -546,7 +550,7 @@ def test_fail_api(fail_url_list, fail_params_list, fail_file_name_list, api_chec
     ws.load_fail_load_list(fail_file_name)
     print('fail_load_api: {}'.format(ws.fail_load_html))
     ws.notify_fail_html(True)
-    response = ws.retry_load_multiple_api(api_checker)
+    response = ws.retry_load_multiple_api(method, api_checker)
     fail_url_list = [res['url'] for res in response]
     fail_file_name_dict = ws.match_url_file_name(fail_url_list, fail_file_name_list)
     ws.save_multiple_api(ws.WEB_SCRAPPER_FILE_SAVE_MODE, response, os.getcwd(), fail_file_name_dict)
@@ -578,10 +582,10 @@ if __name__ == '__main__':
                          html_checker=browser_html_checker, asyn=True)
     elif run_test_call_api:
         api_url = 'http://racing-cw.api.atnext.com/race/game/one/date'
-        test_call_api(api_url, 'sync_api_call.json',
+        test_call_api('get', api_url, 'sync_api_call.json',
                       params={'date': '2015-11-01', 'day_night': 'day', 'type': '3pick1'},
                       api_checker=test_api_checker)
-        test_call_api(api_url, 'async_api_call.json',
+        test_call_api('get', api_url, 'async_api_call.json',
                       params={'date': '2015-11-01', 'day_night': 'day', 'type': '3pick1'},
                       api_checker=test_api_checker, asyn=True)
     elif run_test_load_multiple_html:
@@ -613,9 +617,9 @@ if __name__ == '__main__':
                        {'date': '2018-11-7', 'day_night': 'night', 'type': '3pick1'},
                        {'date': '2019-3-2', 'day_night': 'day', 'type': '3pick1'}]
         file_name_list = ['sync_api_call_{}.json'.format(index) for index in range(1, 4)]
-        test_load_multiple_api(url_list, file_name_list, params_list, test_api_checker)
+        test_load_multiple_api('get', url_list, file_name_list, params_list, test_api_checker)
         file_name_list = ['async_api_call_{}.json'.format(index) for index in range(1, 4)]
-        test_load_multiple_api(url_list, file_name_list, params_list, test_api_checker, True)
+        test_load_multiple_api('get', url_list, file_name_list, params_list, test_api_checker, True)
     elif run_test_fail_load:
         url_list = [
             'https://racing.hkjc.com/racing/Info/meeting/RaceCard/english/Local/20190317/ST/{}'.format(index)
@@ -633,7 +637,7 @@ if __name__ == '__main__':
                        {'date': '2018-11-7', 'day_night': 'night', 'type': '3pick1'},
                        {'date': '2019-3-2', 'day_night': 'day', 'type': '3pick1'}]
         file_name_list = ['recall_api_{}.json'.format(index) for index in range(1, 4)]
-        test_fail_api(url_list, params_list, file_name_list, test_api_checker)
+        test_fail_api('get', url_list, params_list, file_name_list, test_api_checker)
 
 
 
