@@ -136,3 +136,7 @@ async def async_select_dropdown_box(session, dropdown_box_element, option_tag, l
     await selection.click()
     await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, load_element)
     return session
+
+
+def print_websocket_response(response):
+    print(response)

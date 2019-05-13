@@ -17,3 +17,8 @@ class WebScrapperSetting(object):
     WEB_SCRAPPER_SERVICE_REF = {'chrome': 'Chromedriver', 'firefox': 'Geckodriver'}
 
 
+class WebsocketSetting(object):
+    WEBSOCKET_LOGGER_PATH = '/media/sctys/Seagate Expansion Drive/Projects/Log/log_sctys_netdata'
+    WEBSOCKET_LOGGER_FILE = 'websocket.log'
+    WEBSOCKET_LOGGER_LEVEL = 'DEBUG'
+    WEBSOCKET_NOTIFIER = 'slack'
