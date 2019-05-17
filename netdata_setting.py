@@ -22,3 +22,5 @@ class WebsocketSetting(object):
     WEBSOCKET_LOGGER_FILE = 'websocket.log'
     WEBSOCKET_LOGGER_LEVEL = 'DEBUG'
     WEBSOCKET_NOTIFIER = 'slack'
+    WEBSOCKET_NUM_RETRY = 5
+    WEBSOCKET_RETRY_SLEEP = 10
