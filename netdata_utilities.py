@@ -20,6 +20,20 @@ def set_logger(logger_path, logger_file_name, logger_level, logger_name):
     return logger
 
 
+def message_checker(response, html_checker=None):
+    if html_checker is None:
+        html_checker = dummy_checker
+    if not response['ok']:
+        result = {'status': False, 'message': response['error']}
+    else:
+        html_check = html_checker(response['message'])
+        if html_check['status']:
+            result = {'status': True, 'message': None}
+        else:
+            result = {'status': False, 'message': html_check['message']}
+    return result
+
+
 def retry(func, *params, checker, html_checker, num_retry, sleep_time, logger, **kwargs):
     count = 0
     run_success = False
@@ -52,6 +66,18 @@ async def async_retry(func, *params, checker, html_checker, num_retry, sleep_tim
     if not run_success and response['ok']:
         response = {'ok': False, 'error': checker(response, html_checker)['message'], 'url': response['url']}
     return response
+
+
+def dummy_checker(html):
+    return {'status': True}
+
+
+def dummy_action(driver, *args):
+    return driver
+
+
+async def async_dummy_action(session, *args):
+    return session
 
 
 def extract_text_from_html(html, element=None, index=0):
@@ -137,6 +163,9 @@ async def async_select_dropdown_box(session, dropdown_box_element, option_tag, l
     await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, load_element)
     return session
 
+
+async def no_auth(websocket):
+    return websocket
 
 def print_websocket_response(response):
     print(response)

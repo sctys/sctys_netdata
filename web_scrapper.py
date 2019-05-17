@@ -7,8 +7,9 @@ import urllib
 import json
 import os
 from netdata_setting import NOTIFIER_PATH, IO_PATH, TEMP_PATH, WebScrapperSetting
-from netdata_utilities import set_logger, retry, async_retry, check_html_element_exist, select_dropdown_box, \
-    async_select_dropdown_box, check_api_element_exist
+from netdata_utilities import set_logger, retry, async_retry, message_checker, dummy_checker, dummy_action, \
+    async_dummy_action, check_html_element_exist, select_dropdown_box, async_select_dropdown_box, \
+    check_api_element_exist
 import sys
 import time
 sys.path.append(NOTIFIER_PATH)
@@ -82,7 +83,7 @@ class WebScrapper(WebScrapperSetting):
 
     def _browse_html(self, url, extra_action=None, *args):
         if extra_action is None:
-            extra_action = self._dummy_action
+            extra_action = dummy_action
         try:
             self.driver.get(url)
             self.driver = extra_action(self.driver, *args)
@@ -93,7 +94,7 @@ class WebScrapper(WebScrapperSetting):
 
     async def _async_browse_html(self, url, async_extra_action=None, *args):
         if async_extra_action is None:
-            async_extra_action = self._async_dummy_action
+            async_extra_action = async_dummy_action
         try:
             async with self.sema, get_session(self.service, self.browser) as session:
                 await session.get(url)
@@ -137,31 +138,6 @@ class WebScrapper(WebScrapperSetting):
             response = {'ok': False, 'error': e, 'url': self.extend_url(url, params)}
         return response
 
-    def _message_checker(self, response, html_checker=None):
-        if html_checker is None:
-            html_checker = self._dummy_checker
-        if not response['ok']:
-            result = {'status': False, 'message': response['error']}
-        else:
-            html_check = html_checker(response['message'])
-            if html_check['status']:
-                result = {'status': True, 'message': None}
-            else:
-                result = {'status': False, 'message': html_check['message']}
-        return result
-
-    @ staticmethod
-    def _dummy_checker(html):
-        return {'status': True}
-
-    @ staticmethod
-    def _dummy_action(driver, *args):
-        return driver
-
-    @ staticmethod
-    async def _async_dummy_action(session, *args):
-        return session
-
     def clear_fail_load_list(self):
         self.fail_load_html = []
 
@@ -188,7 +164,7 @@ class WebScrapper(WebScrapperSetting):
     def load_html(self, url, static=True, html_checker=None, time_sleep=0, verbose=False):
         # if html_checker is None:
         #     html_checker = self._dummy_checker
-        response = retry(self._load_html, url, static, checker=self._message_checker, html_checker=html_checker,
+        response = retry(self._load_html, url, static, checker=message_checker, html_checker=html_checker,
                          num_retry=self.WEB_SCRAPPER_NUM_RETRY, sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP,
                          logger=self.logger)
         if verbose:
@@ -202,7 +178,7 @@ class WebScrapper(WebScrapperSetting):
     async def async_load_html(self, url, static=True, html_checker=None, time_sleep=0, verbose=False):
         # if html_checker is None:
         #     html_checker = self._dummy_checker
-        response = await async_retry(self._async_load_html, url, static, checker=self._message_checker,
+        response = await async_retry(self._async_load_html, url, static, checker=message_checker,
                                      html_checker=html_checker, num_retry=self.WEB_SCRAPPER_NUM_RETRY,
                                      sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP, logger=self.logger)
         if verbose:
@@ -216,7 +192,7 @@ class WebScrapper(WebScrapperSetting):
     def browser_simulator(self, url, extra_action=None, *args, html_checker=None, time_sleep=0, verbose=False):
         if self.driver is None:
             self.get_browser()
-        response = retry(self._browse_html, url, extra_action, *args, checker=self._message_checker,
+        response = retry(self._browse_html, url, extra_action, *args, checker=message_checker,
                          html_checker=html_checker,
                          num_retry=self.WEB_SCRAPPER_NUM_RETRY, sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP,
                          logger=self.logger)
@@ -233,7 +209,7 @@ class WebScrapper(WebScrapperSetting):
         if self.browser is None:
             self.get_browser(True)
         response = await async_retry(self._async_browse_html, url, async_extra_action, *args,
-                                     checker=self._message_checker, html_checker=html_checker,
+                                     checker=message_checker, html_checker=html_checker,
                                      num_retry=self.WEB_SCRAPPER_NUM_RETRY, sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP,
                                      logger=self.logger)
         if verbose:
@@ -245,7 +221,7 @@ class WebScrapper(WebScrapperSetting):
         return response
 
     def api_call(self, method, url, params=None, api_checker=None, time_sleep=0, verbose=False, **kwargs):
-        response = retry(self._api_call, method, url, params, checker=self._message_checker, html_checker=api_checker,
+        response = retry(self._api_call, method, url, params, checker=message_checker, html_checker=api_checker,
                          num_retry=self.WEB_SCRAPPER_NUM_RETRY, sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP,
                          logger=self.logger, **kwargs)
         if verbose:
@@ -257,7 +233,7 @@ class WebScrapper(WebScrapperSetting):
         return response
 
     async def async_api_call(self, method, url, params=None, api_checker=None, time_sleep=0, verbose=False, **kwargs):
-        response = await async_retry(self._async_api_call, method, url, params, checker=self._message_checker,
+        response = await async_retry(self._async_api_call, method, url, params, checker=message_checker,
                                      html_checker=api_checker, num_retry=self.WEB_SCRAPPER_NUM_RETRY,
                                      sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP, logger=self.logger, **kwargs)
         if verbose:
