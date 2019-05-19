@@ -167,5 +167,5 @@ async def async_select_dropdown_box(session, dropdown_box_element, option_tag, l
 async def no_auth(websocket):
     return websocket
 
-def print_websocket_response(response):
+def print_websocket_response(response, *args, **kwargs):
     print(response)

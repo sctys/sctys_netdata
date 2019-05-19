@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 import urllib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from netdata_setting import NOTIFIER_PATH, IO_PATH, TEMP_PATH, WebScrapperSetting
 from netdata_utilities import set_logger, retry, async_retry, message_checker, dummy_checker, dummy_action, \
     async_dummy_action, check_html_element_exist, select_dropdown_box, async_select_dropdown_box, \
@@ -45,12 +46,15 @@ class WebScrapper(WebScrapperSetting):
             if BROWSER == 'chrome':
                 options.add_argument('--no-sandbox')
                 options.add_argument('--disable-gpu')
+                options.add_argument('--disable-dev-shm-usage')
             self.driver = getattr(webdriver, BROWSER.capitalize())(**{'{}_options'.format(BROWSER): options})
         else:
             self.service = getattr(services, self.WEB_SCRAPPER_SERVICE_REF[BROWSER])()
             args = ['--headless']
             if BROWSER == 'chrome':
                 args.append('--disable-gpu')
+                args.append('--no-sandbox')
+                args.append('--disable-dev-shm-usage')
             args = {'args': args}
             self.browser = getattr(browsers, BROWSER.capitalize())(**{'{}Options'.format(BROWSER): args})
 
@@ -85,9 +89,10 @@ class WebScrapper(WebScrapperSetting):
         if extra_action is None:
             extra_action = dummy_action
         try:
-            self.driver.get(url)
-            self.driver = extra_action(self.driver, *args)
-            response = {'ok': True, 'message': self.driver.page_source, 'url': url}
+            driver = self.driver
+            driver.get(url)
+            driver = extra_action(driver, *args)
+            response = {'ok': True, 'message': driver.page_source, 'url': url}
         except Exception as e:
             response = {'ok': False, 'error': e, 'url': url}
         return response
@@ -201,6 +206,8 @@ class WebScrapper(WebScrapperSetting):
         if not response['ok']:
             self.logger.error('Fail to load {}. {}'.format(response['url'], response['error']))
             self.fail_load_html.append({'url': url, 'args': args})
+        self.driver.close()
+        self.driver = None
         time.sleep(time_sleep)
         return response
 
@@ -286,9 +293,15 @@ class WebScrapper(WebScrapperSetting):
             if not isinstance(static, list):
                 response = list(map(lambda url: self.load_html(url, static, html_checker, time_sleep, verbose),
                                     url_list))
+                # with ThreadPoolExecutor(max_workers=self.WEB_SCRAPPER_SEMAPHORE) as executor:
+                #     response = list(executor.map(lambda url: self.load_html(url, static, html_checker, time_sleep,
+                #                                                             verbose), url_list))
             else:
                 response = list(map(lambda url, stat: self.load_html(url, stat, html_checker, time_sleep, verbose),
                                     url_list, static))
+                # with ThreadPoolExecutor(max_workers=self.WEB_SCRAPPER_SEMAPHORE) as executor:
+                #     response = list(executor.map(lambda url, stat: self.load_html(url, stat, html_checker, time_sleep,
+                #                     verbose), url_list, static))
         self.notify_fail_html(True)
         self.save_fail_load_list()
         return response
