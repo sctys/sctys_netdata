@@ -105,3 +105,4 @@ venv.bak/
 
 *.html
 *.json
+password.py

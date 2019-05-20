@@ -6,9 +6,11 @@ from bs4 import BeautifulSoup
 import urllib
 import json
 import os
+from stem import Signal
+from stem.control import Controller
 from concurrent.futures import ThreadPoolExecutor
 from netdata_setting import NOTIFIER_PATH, IO_PATH, TEMP_PATH, WebScrapperSetting
-from netdata_utilities import set_logger, retry, async_retry, message_checker, dummy_checker, dummy_action, \
+from netdata_utilities import set_logger, retry, async_retry, message_checker, dummy_action, \
     async_dummy_action, check_html_element_exist, select_dropdown_box, async_select_dropdown_box, \
     check_api_element_exist
 import sys
@@ -58,6 +60,17 @@ class WebScrapper(WebScrapperSetting):
             args = {'args': args}
             self.browser = getattr(browsers, BROWSER.capitalize())(**{'{}Options'.format(BROWSER): args})
 
+    def renew_ip(self, asyn=True):
+        with Controller.from_port(port=9051) as controller:
+            controller.authenticate(password=self.TOR_PASSWORD)
+            controller.signal(Signal.NEWNYM)
+        if asyn:
+            self.asession = AsyncHTMLSession()
+            self.asession.proxies = self.WEB_SCRAPPER_PROXIES
+        else:
+            self.session = HTMLSession()
+            self.session.proxies = self.WEB_SCRAPPER_PROXIES
+
     def _load_html(self, url, static=True):
         try:
             html = self.session.get(url)
@@ -66,9 +79,9 @@ class WebScrapper(WebScrapperSetting):
                     html.html.render()
                 response = {'ok': True, 'message': html.html.html, 'url': url}
             else:
-                response = {'ok': False, 'error': html.reason, 'url': url}
+                response = {'ok': False, 'error': html.reason, 'error_code': html.status_code, 'url': url}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'url': url}
+            response = {'ok': False, 'error': e, 'error_code': self.WEB_SCRAPPER_EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
     async def _async_load_html(self, url, static=True):
@@ -80,9 +93,9 @@ class WebScrapper(WebScrapperSetting):
                     await html.html.arender()
                 response = {'ok': True, 'message': html.html.html, 'url': url}
             else:
-                response = {'ok': False, 'error': html.reason, 'url': url}
+                response = {'ok': False, 'error': html.reason, 'error_code': html.status_code, 'url': url}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'url': url}
+            response = {'ok': False, 'error': e, 'error_code': self.WEB_SCRAPPER_EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
     def _browse_html(self, url, extra_action=None, *args):
@@ -94,7 +107,7 @@ class WebScrapper(WebScrapperSetting):
             driver = extra_action(driver, *args)
             response = {'ok': True, 'message': driver.page_source, 'url': url}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'url': url}
+            response = {'ok': False, 'error': e, 'error_code': self.WEB_SCRAPPER_EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
     async def _async_browse_html(self, url, async_extra_action=None, *args):
@@ -107,7 +120,7 @@ class WebScrapper(WebScrapperSetting):
                 html = await session.get_page_source()
             response = {'ok': True, 'message': html, 'url': url}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'url': url}
+            response = {'ok': False, 'error': e, 'error_code': self.WEB_SCRAPPER_EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
     @ staticmethod
@@ -125,9 +138,11 @@ class WebScrapper(WebScrapperSetting):
             if data.status_code == 200:
                 response = {'ok': True, 'message': data.html.html, 'url': self.extend_url(url, params)}
             else:
-                response = {'ok': False, 'error': data.reason, 'url': self.extend_url(url, params)}
+                response = {'ok': False, 'error': data.reason, 'error_code': data.status_code,
+                            'url': self.extend_url(url, params)}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'url': self.extend_url(url, params)}
+            response = {'ok': False, 'error': e, 'error_code': self.WEB_SCRAPPER_EXCEPTION_ERROR_CODE,
+                        'url': self.extend_url(url, params)}
         return response
 
     async def _async_api_call(self, method, url, params=None, **kwargs):
@@ -138,9 +153,11 @@ class WebScrapper(WebScrapperSetting):
             if data.status_code == 200:
                 response = {'ok': True, 'message': data.html.html, 'url': self.extend_url(url, params)}
             else:
-                response = {'ok': False, 'error': data.reason, 'url': self.extend_url(url, params)}
+                response = {'ok': False, 'error': data.reason, 'error_code': data.status_code,
+                            'url': self.extend_url(url, params)}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'url': self.extend_url(url, params)}
+            response = {'ok': False, 'error': e, 'error_code': self.WEB_SCRAPPER_EXCEPTION_ERROR_CODE,
+                        'url': self.extend_url(url, params)}
         return response
 
     def clear_fail_load_list(self):
@@ -279,7 +296,8 @@ class WebScrapper(WebScrapperSetting):
         file_name_list = [file_name_dict[url] for url in url_list]
         self.io.save_multiple_files(mode, api_list, file_path, file_name_list, 'txt', verbose, **kwargs)
 
-    def load_multiple_html(self, url_list, static=True, html_checker=None, asyn=True, time_sleep=0, verbose=False):
+    def load_multiple_html(self, url_list, static=True, html_checker=None, asyn=True, time_sleep=0, verbose=False,
+                           notify_fail=True):
         self.clear_fail_load_list()
         if asyn:
             if not isinstance(static, list):
@@ -302,12 +320,13 @@ class WebScrapper(WebScrapperSetting):
                 # with ThreadPoolExecutor(max_workers=self.WEB_SCRAPPER_SEMAPHORE) as executor:
                 #     response = list(executor.map(lambda url, stat: self.load_html(url, stat, html_checker, time_sleep,
                 #                     verbose), url_list, static))
-        self.notify_fail_html(True)
+        if notify_fail:
+            self.notify_fail_html(True)
         self.save_fail_load_list()
         return response
 
     def browse_multiple_html(self, url_list, extra_action=None, *args, html_checker=None, asyn=True, time_sleep=0,
-                             verbose=False):
+                             verbose=False, notify_fail=True):
         self.clear_fail_load_list()
         if asyn:
             tasks = [asyncio.ensure_future(self.async_browser_simulator(
@@ -318,12 +337,13 @@ class WebScrapper(WebScrapperSetting):
             response = list(map(lambda url: self.browser_simulator(
                 url, extra_action, *args, html_checker=html_checker, time_sleep=time_sleep, verbose=verbose),
                                 url_list))
-        self.notify_fail_html(False)
+        if notify_fail:
+            self.notify_fail_html(False)
         self.save_fail_load_list()
         return response
 
     def load_multiple_api(self, method, url_list, params=None, api_checker=None, asyn=True, time_sleep=0, verbose=False,
-                          **kwargs):
+                          notify_fail=True, **kwargs):
         self.clear_fail_load_list()
         if asyn:
             if not isinstance(params, list):
@@ -342,7 +362,8 @@ class WebScrapper(WebScrapperSetting):
             else:
                 response = list(map(lambda url, param: self.api_call(method, url, param, api_checker, time_sleep,
                                                                      verbose, **kwargs), url_list, params))
-        self.notify_fail_html(True)
+        if notify_fail:
+            self.notify_fail_html(True)
         self.save_fail_load_list()
         return response
 

@@ -24,13 +24,13 @@ def message_checker(response, html_checker=None):
     if html_checker is None:
         html_checker = dummy_checker
     if not response['ok']:
-        result = {'status': False, 'message': response['error']}
+        result = {'status': False, 'message': response['error'], 'code': response['error_code']}
     else:
         html_check = html_checker(response['message'])
         if html_check['status']:
-            result = {'status': True, 'message': None}
+            result = {'status': True}
         else:
-            result = {'status': False, 'message': html_check['message']}
+            result = {'status': False, 'message': html_check['message'], 'code': None}
     return result
 
 
@@ -39,11 +39,15 @@ def retry(func, *params, checker, html_checker, num_retry, sleep_time, logger, *
     run_success = False
     while count < num_retry and not run_success:
         response = func(*params, **kwargs)
-        if not checker(response, html_checker)['status']:
+        check = checker(response, html_checker)
+        if not check['status']:
             logger.error('Fail attempt {} for function {}: {}'.format(count + 1, func.__name__,
                                                                       checker(response, html_checker)['message']))
             time.sleep(sleep_time)
-            count += 1
+            if check['code'] is None or check['code'] >= 500:
+                count += 1
+            else:
+                count = num_retry
         else:
             run_success = True
     if not run_success and response['ok']:
@@ -56,11 +60,15 @@ async def async_retry(func, *params, checker, html_checker, num_retry, sleep_tim
     run_success = False
     while count < num_retry and not run_success:
         response = await func(*params, **kwargs)
-        if not checker(response, html_checker)['status']:
+        check = checker(response, html_checker)
+        if not check['status']:
             logger.error('Fail attempt {} for function {}: {}'.format(count + 1, func.__name__,
                                                                       checker(response, html_checker)['message']))
             await asyncio.sleep(sleep_time)
-            count += 1
+            if check['code'] is None or check['code'] >= 500:
+                count += 1
+            else:
+                count = num_retry
         else:
             run_success = True
     if not run_success and response['ok']:
@@ -108,6 +116,7 @@ def check_api_text_exist(data, text):
         return {'status': True}
     else:
         return {'status': False, 'message': 'Text {} does not exist'.format(text)}
+
 
 def check_html_element_exist(html, element, min_times=1):
     soup = BeautifulSoup(html, 'html.parser')

@@ -1,3 +1,5 @@
+from password import tor_password
+
 NOTIFIER_PATH = '/media/sctys/Seagate Expansion Drive/Projects/sctys_notify'
 IO_PATH = '/media/sctys/Seagate Expansion Drive/Projects/sctys_io'
 TEMP_PATH = '/media/sctys/Seagate Expansion Drive/Projects/tmp'
@@ -15,6 +17,9 @@ class WebScrapperSetting(object):
     WEB_SCRAPPER_RETRY_SLEEP = 10
     WEB_SCRAPPER_BROWSER_WAIT = 60
     WEB_SCRAPPER_SERVICE_REF = {'chrome': 'Chromedriver', 'firefox': 'Geckodriver'}
+    WEB_SCRAPPER_PROXIES = {'http': 'socks5://127.0.0.1:9050', 'https': 'socks5://127.0.0.1:9050'}
+    WEB_SCRAPPER_EXCEPTION_ERROR_CODE = 999
+    TOR_PASSWORD = tor_password
 
 
 class WebsocketSetting(object):
