@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from netdata_setting import NOTIFIER_PATH, IO_PATH, TEMP_PATH, WebScrapperSetting
 from netdata_utilities import set_logger, retry, async_retry, message_checker, dummy_action, \
     async_dummy_action, check_html_element_exist, select_dropdown_box, async_select_dropdown_box, \
-    check_api_element_exist
+    check_api_element_exist, get_random_user_agent
 import sys
 import time
 sys.path.append(NOTIFIER_PATH)
@@ -67,9 +67,11 @@ class WebScrapper(WebScrapperSetting):
         if asyn:
             self.asession = AsyncHTMLSession()
             self.asession.proxies = self.WEB_SCRAPPER_PROXIES
+            self.asession.headers['User-Agent'] = get_random_user_agent()
         else:
             self.session = HTMLSession()
             self.session.proxies = self.WEB_SCRAPPER_PROXIES
+            self.session.headers['User-Agent'] = get_random_user_agent()
 
     def _load_html(self, url, static=True):
         try:
@@ -567,6 +569,16 @@ def test_fail_api(method, fail_url_list, fail_params_list, fail_file_name_list, 
     ws.clear_temp_fail_html()
 
 
+def test_renew_ip():
+    ws = WebScrapper()
+    while True:
+        print(ws.session.get('http://icanhazip.com/').html.html)
+        ws.renew_ip(False)
+        time.sleep(10)
+
+
+
+
 if __name__ == '__main__':
     run_test_load_html = False
     run_test_browse_html = False
@@ -576,7 +588,8 @@ if __name__ == '__main__':
     run_test_load_multiple_api = False
     run_test_fail_load = False
     run_test_fail_browse = False
-    run_test_fail_api = True
+    run_test_fail_api = False
+    run_test_renew_ip = True
     if run_test_load_html:
         dynamic_url = 'https://racing.hkjc.com/racing/Info/meeting/RaceCard/english/Local/20190317/ST/1'
         static_url = 'https://racing.hkjc.com/racing/Info/meeting/Draw/english/Local/'
@@ -648,7 +661,8 @@ if __name__ == '__main__':
                        {'date': '2019-3-2', 'day_night': 'day', 'type': '3pick1'}]
         file_name_list = ['recall_api_{}.json'.format(index) for index in range(1, 4)]
         test_fail_api('get', url_list, params_list, file_name_list, test_api_checker)
-
+    elif run_test_renew_ip:
+        test_renew_ip()
 
 
 

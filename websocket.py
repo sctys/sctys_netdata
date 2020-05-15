@@ -2,8 +2,10 @@ import websockets
 import asyncio
 import json
 import threading
+import copy
 from netdata_setting import NOTIFIER_PATH, WebsocketSetting
-from netdata_utilities import set_logger, async_retry, no_auth, message_checker, print_websocket_response
+from netdata_utilities import set_logger, async_retry, no_auth, message_checker, print_websocket_response, \
+    dummy_response_processor
 import sys
 sys.path.append(NOTIFIER_PATH)
 
@@ -17,6 +19,7 @@ class Websocket(WebsocketSetting):
         self.auth_ws = None
         self.response = {}
         self.thread = None
+        self.websocket_open = False
         self.lock = threading.Lock()
 
     def set_logger(self):
@@ -47,19 +50,39 @@ class Websocket(WebsocketSetting):
         await asyncio.sleep(time_sleep)
         return response
 
+    def store_websocket_data(self, response, key_name, in_place=True, response_processor=None):
+        if response_processor is None:
+            response_processor = dummy_response_processor
+        data = response_processor(response)
+        if in_place:
+            if data['ok']:
+                self.response[key_name] = data
+        else:
+            if key_name not in self.response:
+                self.response[key_name] = []
+            if isinstance(data, list):
+                self.response[key_name] += copy.deepcopy([dt for dt in data if dt['ok']])
+            else:
+                if data['ok']:
+                    self.response[key_name].append(copy.deepcopy(data))
+
     async def long_live_api_call(self, url, message, auth=None, action=None, *args, **kwargs):
         if auth is None:
             auth = no_auth
         if action is None:
             action = print_websocket_response
         try:
-            async with websockets.connect(url) as websocket:
-                websocket = await auth(websocket)
-                await websocket.send(message)
-                while websocket.open:
-                    response = await websocket.recv()
-                    action(response, *args, **kwargs)
+            while True:
+                async with websockets.connect(url) as websocket:
+                    websocket = await auth(websocket)
+                    await websocket.send(message)
+                    while websocket.open:
+                        self.websocket_open = True
+                        response = await websocket.recv()
+                        action(response, *args, **kwargs)
+                    self.websocket_open = False
         except Exception as e:
+            self.websocket_open = False
             self.logger.error('Error in connecting to websocket {}. {}'.format(message, e))
 
     def loop_api_call(self, func, url, message, auth=None, action=None, *args, **kwargs):
@@ -109,9 +132,11 @@ if __name__ == '__main__':
             "instrument_name": "BTC-PERPETUAL2", "depth": 5}}
         print(test_one_off_api_call(url, json.dumps(message)))
     elif run_test_long_live_api_call:
-        url = 'wss://test.deribit.com/ws/api/v2'
-        message = {"jsonrpc": "2.0", "id": 7264, "method": "public/subscribe", "params": {
-            "channels": ["book.BTC-PERPETUAL.none.10.100ms"]}}
+        # url = 'wss://test.deribit.com/ws/api/v2'
+        # message = {"jsonrpc": "2.0", "id": 7264, "method": "public/subscribe", "params": {
+        #     "channels": ["book.BTC-PERPETUAL.none.10.100ms"]}}
+        url = 'wss://www.bitmex.com/realtime'
+        message = {'op': 'subscribe', 'args': 'orderBook10:XBTUSD'}
         action = print_websocket_response
         test_long_live_api_call(url, json.dumps(message), action)
     elif run_test_multiple_long_live_api_call:

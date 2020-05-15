@@ -9,6 +9,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 from netdata_setting import WebScrapperSetting
+from fake_useragent import UserAgent
 
 
 def set_logger(logger_path, logger_file_name, logger_level, logger_name):
@@ -155,6 +156,11 @@ def select_dropdown_box(driver, dropdown_box_element, option_index, option_type,
     return driver
 
 
+def get_random_user_agent():
+    ua = UserAgent()
+    return ua.random
+
+
 async def async_wait_for_element(session, load_element):
     await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, load_element)
     return session
@@ -173,8 +179,21 @@ async def async_select_dropdown_box(session, dropdown_box_element, option_tag, l
     return session
 
 
+async def async_click_option(session, option_element, load_element):
+    await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, option_element)
+    option_button = await session.get_element(option_element)
+    await option_button.click()
+    await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, load_element)
+    return session
+
+
 async def no_auth(websocket):
     return websocket
 
+
 def print_websocket_response(response, *args, **kwargs):
     print(response)
+
+
+def dummy_response_processor(response):
+    return json.loads(response)
