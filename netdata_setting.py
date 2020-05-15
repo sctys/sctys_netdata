@@ -1,12 +1,13 @@
+import os
 from password import tor_password
 
-NOTIFIER_PATH = '/media/sctys/Seagate Expansion Drive/Projects/sctys_notify'
-IO_PATH = '/media/sctys/Seagate Expansion Drive/Projects/sctys_io'
-TEMP_PATH = '/media/sctys/Seagate Expansion Drive/Projects/tmp'
+NOTIFIER_PATH = os.environ['SCTYS_PROJECT'] + '/sctys_notify'
+IO_PATH = os.environ['SCTYS_PROJECT'] + '/sctys_io'
+TEMP_PATH = os.environ['SCTYS_PROJECT'] + '/tmp'
 
 
 class WebScrapperSetting(object):
-    WEB_SCRAPPER_LOGGER_PATH = '/media/sctys/Seagate Expansion Drive/Projects/Log/log_sctys_netdata'
+    WEB_SCRAPPER_LOGGER_PATH = os.environ['SCTYS_PROJECT'] + '/Log/log_sctys_netdata'
     WEB_SCRAPPER_LOGGER_FILE = 'web_scrapper.log'
     WEB_SCRAPPER_LOGGER_LEVEL = 'DEBUG'
     WEB_SCRAPPER_SEMAPHORE = 1000
@@ -23,7 +24,7 @@ class WebScrapperSetting(object):
 
 
 class WebsocketSetting(object):
-    WEBSOCKET_LOGGER_PATH = '/media/sctys/Seagate Expansion Drive/Projects/Log/log_sctys_netdata'
+    WEBSOCKET_LOGGER_PATH = os.environ['SCTYS_PROJECT'] + '/Log/log_sctys_netdata'
     WEBSOCKET_LOGGER_FILE = 'websocket.log'
     WEBSOCKET_LOGGER_LEVEL = 'DEBUG'
     WEBSOCKET_NOTIFIER = 'slack'
