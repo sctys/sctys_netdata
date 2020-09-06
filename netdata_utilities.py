@@ -135,10 +135,12 @@ def check_html_text_exist(html, text, min_times=1):
     else:
         return {'status': False, 'message': 'Text {} not appearing at least {} times'.format(text, min_times)}
 
+
 def wait_for_element(driver, load_element):
     WebDriverWait(driver, WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT).until(
         EC.visibility_of_element_located((By.CSS_SELECTOR, load_element)))
     return driver
+
 
 def select_dropdown_box(driver, dropdown_box_element, option_index, option_type, load_element):
     WebDriverWait(driver, WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT).until(
@@ -165,9 +167,11 @@ async def async_wait_for_element(session, load_element):
     await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, load_element)
     return session
 
+
 async def async_wait(session):
     await session.wait(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT)
     return session
+
 
 async def async_select_dropdown_box(session, dropdown_box_element, option_tag, load_element):
     await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, dropdown_box_element)
@@ -197,3 +201,101 @@ def print_websocket_response(response, *args, **kwargs):
 
 def dummy_response_processor(response):
     return json.loads(response)
+
+
+class ResponseChecker(object):
+
+    @ staticmethod
+    def dummy_checker(html):
+        return {'status': True}
+
+    @ staticmethod
+    def check_api_element_exist(data, key, value=None):
+        if isinstance(data, str):
+            data = json.loads(data)
+        elif isinstance(data, bytes):
+            data = json.load(data)
+        if key in data and (value is None or data[key] == value):
+            return {'status': True}
+        else:
+            if key not in data:
+                return {'status': False, 'message': 'Key {} not exist'.format(key)}
+            elif data[key] != value:
+                return {'status': False, 'message': 'Key {} does not have value {}'.format(key, value)}
+
+    @ staticmethod
+    def check_api_text_exist(data, text):
+        if text in data:
+            return {'status': True}
+        else:
+            return {'status': False, 'message': 'Text {} does not exist'.format(text)}
+
+    @ staticmethod
+    def check_html_element_exist(html, element, min_times=1):
+        soup = BeautifulSoup(html, 'html.parser')
+        if len(soup.select(element)) >= min_times:
+            return {'status': True}
+        else:
+            return {'status': False, 'message': 'Element {} not appearing at least {} times'.format(element, min_times)}
+
+    @ staticmethod
+    def check_html_text_exist(html, text, min_times=1):
+        soup = BeautifulSoup(html, 'html.parser')
+        txt = soup.get_text()
+        if text in txt:
+            return {'status': True}
+        else:
+            return {'status': False, 'message': 'Text {} not appearing at least {} times'.format(text, min_times)}
+
+
+class BrowserAction(object):
+
+    @ staticmethod
+    def wait_for_element(driver, load_element):
+        WebDriverWait(driver, WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, load_element)))
+        return driver
+
+    @ staticmethod
+    def select_dropdown_box(driver, dropdown_box_element, option_index, option_type, load_element):
+        WebDriverWait(driver, WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, dropdown_box_element)))
+        dropdown_box = Select(driver.find_element_by_css_selector(dropdown_box_element))
+        if option_type == 'text':
+            selector = dropdown_box.select_by_visible_text
+        elif option_type == 'value':
+            selector = dropdown_box.select_by_value
+        else:
+            selector = dropdown_box.select_by_index
+        selector(option_index)
+        WebDriverWait(driver, WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, load_element)))
+        return driver
+
+    @ staticmethod
+    async def async_wait_for_element(session, load_element):
+        await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, load_element)
+        return session
+
+    @ staticmethod
+    async def async_wait(session):
+        await session.wait(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT)
+        return session
+
+    @ staticmethod
+    async def async_select_dropdown_box(session, dropdown_box_element, option_tag, load_element):
+        await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, dropdown_box_element)
+        dropdown_box = await session.get_element(dropdown_box_element)
+        await dropdown_box.click()
+        selection = await dropdown_box.get_element(option_tag)
+        await selection.click()
+        await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, load_element)
+        return session
+
+    @ staticmethod
+    async def async_click_option(session, option_element, load_element):
+        await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, option_element)
+        option_button = await session.get_element(option_element)
+        await option_button.click()
+        await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, load_element)
+        return session

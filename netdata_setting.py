@@ -14,9 +14,9 @@ class WebScrapperSetting(object):
     WEB_SCRAPPER_BROWSER = 'chrome'
     WEB_SCRAPPER_NOTIFIER = 'slack'
     WEB_SCRAPPER_FILE_SAVE_MODE = 'thread'
-    WEB_SCRAPPER_NUM_RETRY = 5
+    WEB_SCRAPPER_NUM_RETRY = 3
     WEB_SCRAPPER_RETRY_SLEEP = 10
-    WEB_SCRAPPER_BROWSER_WAIT = 60
+    WEB_SCRAPPER_BROWSER_WAIT = 10
     WEB_SCRAPPER_SERVICE_REF = {'chrome': 'Chromedriver', 'firefox': 'Geckodriver'}
     WEB_SCRAPPER_PROXIES = {'http': 'socks5://127.0.0.1:9050', 'https': 'socks5://127.0.0.1:9050'}
     WEB_SCRAPPER_EXCEPTION_ERROR_CODE = 999
