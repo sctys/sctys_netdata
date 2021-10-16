@@ -2,64 +2,87 @@ from requests_html import HTMLSession, AsyncHTMLSession
 from selenium import webdriver
 import asyncio
 from arsenic import browsers, services, get_session
-from bs4 import BeautifulSoup
 import urllib
 import json
 import os
-from stem import Signal
-from stem.control import Controller
-from concurrent.futures import ThreadPoolExecutor
-from netdata_setting import NOTIFIER_PATH, IO_PATH, TEMP_PATH, WebScrapperSetting
-from netdata_utilities import set_logger, retry, async_retry, message_checker, dummy_action, \
-    async_dummy_action, check_html_element_exist, select_dropdown_box, async_select_dropdown_box, \
-    check_api_element_exist, get_random_user_agent
 import sys
 import time
-sys.path.append(NOTIFIER_PATH)
-sys.path.append(IO_PATH)
-from notifiers import send_message
+sys.path.append(os.environ['SCTYS_PROJECT'] + '/sctys_global_parameters')
+from global_parameters import Path
+sys.path.append(Path.UTILITIES_PROJECT)
+from utilities_functions import set_logger, run_time_wrapper, retry_wrapper, async_retry_wrapper
+sys.path.append(Path.NOTIFIER_PROJECT)
+from notifiers import get_notifier
+sys.path.append(Path.IO_PROJECT)
 from file_io import FileIO
+from stem import Signal
+from stem.control import Controller
+from netdata_utilities import html_checker_wrapper, randomize_consecutive_sleep, ResponseChecker, BrowserAction
 
 
-class WebScrapper(WebScrapperSetting):
+class WebScrapper(object):
 
-    def __init__(self):
-        self.logger = None
-        self.set_logger()
+    SEMAPHORE = 1000
+    BROWSER = 'chrome'
+    SERVICE_REF = {'chrome': 'Chromedriver', 'firefox': 'Geckodriver'}
+    NOTIFIER = 'slack'
+    NUM_RETRY = 3
+    RETRY_SLEEP = 10
+    CONSECUTIVE_SLEEP = (0, 30)
+    BROWSER_WAIT = 10
+    EXCEPTION_ERROR_CODE = 999
+    PREFIX_FAIL_FILE = 'web_scrapper_fail_load_list_'
+
+    def __init__(self, project, logger):
+        self.project = project
+        self.logger = logger
         self.session = HTMLSession()
         self.asession = AsyncHTMLSession()
         self.driver = None
         self.service = None
         self.browser = None
+        self.notifier = None
+        self.io = FileIO(project, logger)
         self.loop = asyncio.get_event_loop()
-        self.sema = asyncio.Semaphore(self.WEB_SCRAPPER_SEMAPHORE)
-        self.io = FileIO()
+        self.sema = asyncio.Semaphore(self.SEMAPHORE)
         self.fail_load_html = []
 
-    def set_logger(self):
-        self.logger = set_logger(self.WEB_SCRAPPER_LOGGER_PATH, self.WEB_SCRAPPER_LOGGER_FILE,
-                                 self.WEB_SCRAPPER_LOGGER_LEVEL, __name__)
+    def set_num_retry(self, num_retry):
+        self.NUM_RETRY = num_retry
+
+    def set_retry_sleep(self, retry_sleep):
+        self.RETRY_SLEEP = retry_sleep
+
+    def set_browser_wait(self, browser_wait):
+        self.BROWSER_WAIT = browser_wait
+
+    def set_consecutive_sleep(self, lower_time, upper_time):
+        self.CONSECUTIVE_SLEEP = (lower_time, upper_time)
 
     def get_browser(self, asyn=False):
-        BROWSER = self.WEB_SCRAPPER_BROWSER
         if not asyn:
-            options = getattr(webdriver, '{}Options'.format(BROWSER.capitalize()))()
+            options = getattr(webdriver, '{}Options'.format(self.BROWSER.capitalize()))()
             options.add_argument('--headless')
-            if BROWSER == 'chrome':
+            if self.BROWSER == 'chrome':
                 options.add_argument('--no-sandbox')
                 options.add_argument('--disable-gpu')
                 options.add_argument('--disable-dev-shm-usage')
-            self.driver = getattr(webdriver, BROWSER.capitalize())(**{'{}_options'.format(BROWSER): options})
+            self.driver = getattr(webdriver, self.BROWSER.capitalize())(**{'{}_options'.format(self.BROWSER): options})
         else:
-            self.service = getattr(services, self.WEB_SCRAPPER_SERVICE_REF[BROWSER])()
+            self.service = getattr(services, self.SERVICE_REF[self.BROWSER])()
             args = ['--headless']
-            if BROWSER == 'chrome':
+            if self.BROWSER == 'chrome':
                 args.append('--disable-gpu')
                 args.append('--no-sandbox')
                 args.append('--disable-dev-shm-usage')
             args = {'args': args}
-            self.browser = getattr(browsers, BROWSER.capitalize())(**{'{}Options'.format(BROWSER): args})
+            self.browser = getattr(browsers, self.BROWSER.capitalize())(**{'{}Options'.format(self.BROWSER): args})
 
+    def get_notifier(self):
+        self.notifier = get_notifier(self.NOTIFIER, self.project, self.logger)
+
+
+    '''
     def renew_ip(self, asyn=True):
         with Controller.from_port(port=9051) as controller:
             controller.authenticate(password=self.TOR_PASSWORD)
@@ -72,6 +95,7 @@ class WebScrapper(WebScrapperSetting):
             self.session = HTMLSession()
             self.session.proxies = self.WEB_SCRAPPER_PROXIES
             self.session.headers['User-Agent'] = get_random_user_agent()
+    '''
 
     def _load_html(self, url, static=True):
         try:
@@ -83,7 +107,7 @@ class WebScrapper(WebScrapperSetting):
             else:
                 response = {'ok': False, 'error': html.reason, 'error_code': html.status_code, 'url': url}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'error_code': self.WEB_SCRAPPER_EXCEPTION_ERROR_CODE, 'url': url}
+            response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
     async def _async_load_html(self, url, static=True):
@@ -97,24 +121,24 @@ class WebScrapper(WebScrapperSetting):
             else:
                 response = {'ok': False, 'error': html.reason, 'error_code': html.status_code, 'url': url}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'error_code': self.WEB_SCRAPPER_EXCEPTION_ERROR_CODE, 'url': url}
+            response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
     def _browse_html(self, url, extra_action=None, *args):
         if extra_action is None:
-            extra_action = dummy_action
+            extra_action = BrowserAction.dummy_action
         try:
             driver = self.driver
             driver.get(url)
             driver = extra_action(driver, *args)
             response = {'ok': True, 'message': driver.page_source, 'url': url}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'error_code': self.WEB_SCRAPPER_EXCEPTION_ERROR_CODE, 'url': url}
+            response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
     async def _async_browse_html(self, url, async_extra_action=None, *args):
         if async_extra_action is None:
-            async_extra_action = async_dummy_action
+            async_extra_action = BrowserAction.async_dummy_action
         try:
             async with self.sema, get_session(self.service, self.browser) as session:
                 await session.get(url)
@@ -122,7 +146,7 @@ class WebScrapper(WebScrapperSetting):
                 html = await session.get_page_source()
             response = {'ok': True, 'message': html, 'url': url}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'error_code': self.WEB_SCRAPPER_EXCEPTION_ERROR_CODE, 'url': url}
+            response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
     @ staticmethod
@@ -143,7 +167,7 @@ class WebScrapper(WebScrapperSetting):
                 response = {'ok': False, 'error': data.reason, 'error_code': data.status_code,
                             'url': self.extend_url(url, params)}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'error_code': self.WEB_SCRAPPER_EXCEPTION_ERROR_CODE,
+            response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE,
                         'url': self.extend_url(url, params)}
         return response
 
@@ -158,7 +182,7 @@ class WebScrapper(WebScrapperSetting):
                 response = {'ok': False, 'error': data.reason, 'error_code': data.status_code,
                             'url': self.extend_url(url, params)}
         except Exception as e:
-            response = {'ok': False, 'error': e, 'error_code': self.WEB_SCRAPPER_EXCEPTION_ERROR_CODE,
+            response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE,
                         'url': self.extend_url(url, params)}
         return response
 
@@ -167,14 +191,19 @@ class WebScrapper(WebScrapperSetting):
 
     def save_fail_load_list(self):
         if len(self.fail_load_html) > 0:
-            file_name = 'web_scrapper_fail_load_list_{}.pkl'.format(int(time.time()))
-            self.io.save_file(self.fail_load_html, TEMP_PATH, file_name, 'joblib')
+            file_name = self.PREFIX_FAIL_FILE + '{}.txt'.format(int(time.time()))
+            self.io.save_file(self.fail_load_html, Path.TEMP_FOLDER, file_name, 'txt')
             self.io.notify_fail_file(True)
 
-    def load_fail_load_list(self, file_name):
-        self.fail_load_html = self.io.load_file(TEMP_PATH, file_name, 'joblib')
+    def clear_temp_fail_file(self):
+        fail_file_list = os.listdir(Path.TEMP_FOLDER)
+        fail_file_list = [os.path.join(Path.TEMP_FOLDER, fail_file) for fail_file in fail_file_list
+                          if self.PREFIX_FAIL_FILE in fail_file]
+        [os.remove(fail_file) for fail_file in fail_file_list]
 
     def notify_fail_html(self, load):
+        if self.notifier is None:
+            self.get_notifier()
         if load:
             operation = 'loaded'
         else:
@@ -183,99 +212,86 @@ class WebScrapper(WebScrapperSetting):
         fail_list_str = '\n'.join(fail_list_html)
         if len(fail_list_str) > 0:
             message = 'The following html were not {} successfully:\n\n'.format(operation) + fail_list_str
-            send_message(message, self.WEB_SCRAPPER_NOTIFIER)
+            self.notifier.retry_send_message(message)
 
-    def load_html(self, url, static=True, html_checker=None, time_sleep=0, verbose=False):
-        # if html_checker is None:
-        #     html_checker = self._dummy_checker
-        response = retry(self._load_html, url, static, checker=message_checker, html_checker=html_checker,
-                         num_retry=self.WEB_SCRAPPER_NUM_RETRY, sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP,
-                         logger=self.logger)
-        if verbose:
-            self.logger.debug('{} loaded'.format(response['url']))
+    def load_html(self, url, static=True, html_checker=None):
+        response = retry_wrapper(
+            self._load_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
+            url, static)
+        self.logger.debug('{} loaded'.format(response['url']))
         if not response['ok']:
-            self.logger.error('Fail to load {}. {}'.format(response['url'], response['error']))
+            self.logger.error('Fail to load {}. {}'.format(response.get('url', url), response['error']))
             self.fail_load_html.append({'url': url, 'static': static})
-        time.sleep(time_sleep)
+        time.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    async def async_load_html(self, url, static=True, html_checker=None, time_sleep=0, verbose=False):
-        # if html_checker is None:
-        #     html_checker = self._dummy_checker
-        response = await async_retry(self._async_load_html, url, static, checker=message_checker,
-                                     html_checker=html_checker, num_retry=self.WEB_SCRAPPER_NUM_RETRY,
-                                     sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP, logger=self.logger)
-        if verbose:
-            self.logger.debug('{} loaded'.format(response['url']))
+    async def async_load_html(self, url, static=True, html_checker=None):
+        response = await async_retry_wrapper(
+            self._async_load_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
+            url, static)
+        self.logger.debug('{} loaded'.format(response['url']))
         if not response['ok']:
-            self.logger.error('Fail to load {}. {}'.format(response['url'], response['error']))
+            self.logger.error('Fail to load {}. {}'.format(response.get('url', url), response['error']))
             self.fail_load_html.append({'url': url, 'static': static})
-        await asyncio.sleep(time_sleep)
+        await asyncio.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    def browser_simulator(self, url, extra_action=None, *args, html_checker=None, time_sleep=0, verbose=False):
+    def browser_simulator(self, url, extra_action=None, *args, html_checker=None):
         if self.driver is None:
             self.get_browser()
-        response = retry(self._browse_html, url, extra_action, *args, checker=message_checker,
-                         html_checker=html_checker,
-                         num_retry=self.WEB_SCRAPPER_NUM_RETRY, sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP,
-                         logger=self.logger)
-        if verbose:
-            self.logger.debug('{} loaded'.format(response['url']))
+        response = retry_wrapper(
+            self._browse_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
+            url, extra_action, *args)
+        self.logger.debug('{} loaded'.format(response['url']))
         if not response['ok']:
-            self.logger.error('Fail to load {}. {}'.format(response['url'], response['error']))
+            self.logger.error('Fail to load {}. {}'.format(response.get('url', url), response['error']))
             self.fail_load_html.append({'url': url, 'args': args})
         self.driver.close()
         self.driver = None
-        time.sleep(time_sleep)
+        time.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    async def async_browser_simulator(self, url, async_extra_action=None, *args, html_checker=None, time_sleep=0,
-                                      verbose=False):
+    async def async_browser_simulator(self, url, async_extra_action=None, *args, html_checker=None):
         if self.browser is None:
             self.get_browser(True)
-        response = await async_retry(self._async_browse_html, url, async_extra_action, *args,
-                                     checker=message_checker, html_checker=html_checker,
-                                     num_retry=self.WEB_SCRAPPER_NUM_RETRY, sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP,
-                                     logger=self.logger)
-        if verbose:
-            self.logger.debug('{} loaded'.format(response['url']))
+        response = await async_retry_wrapper(
+            self._browse_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
+            url, async_extra_action, *args)
+        self.logger.debug('{} loaded'.format(response['url']))
         if not response['ok']:
-            self.logger.error('Fail to load {}. {}'.format(response['url'], response['error']))
+            self.logger.error('Fail to load {}. {}'.format(response.get('url', url), response['error']))
             self.fail_load_html.append({'url': url, 'args': args})
-        await asyncio.sleep(time_sleep)
+        await asyncio.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    def api_call(self, method, url, params=None, api_checker=None, time_sleep=0, verbose=False, **kwargs):
-        response = retry(self._api_call, method, url, params, checker=message_checker, html_checker=api_checker,
-                         num_retry=self.WEB_SCRAPPER_NUM_RETRY, sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP,
-                         logger=self.logger, **kwargs)
-        if verbose:
-            self.logger.debug('{} loaded'.format(response['url']))
+    def api_call(self, method, url, params=None, api_checker=None, **kwargs):
+        response = retry_wrapper(
+            self._api_call, html_checker_wrapper(api_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
+            method, url, params, **kwargs)
+        self.logger.debug('{} loaded'.format(response['url']))
         if not response['ok']:
-            self.logger.error('Fail to load {}. {}'.format(response['url'], response['error']))
+            self.logger.error('Fail to load {}. {}'.format(response.get('url', url), response['error']))
             self.fail_load_html.append({'url': url, 'params': params})
-        time.sleep(time_sleep)
+        time.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    async def async_api_call(self, method, url, params=None, api_checker=None, time_sleep=0, verbose=False, **kwargs):
-        response = await async_retry(self._async_api_call, method, url, params, checker=message_checker,
-                                     html_checker=api_checker, num_retry=self.WEB_SCRAPPER_NUM_RETRY,
-                                     sleep_time=self.WEB_SCRAPPER_RETRY_SLEEP, logger=self.logger, **kwargs)
-        if verbose:
-            self.logger.debug('{} loaded'.format(response['url']))
+    async def async_api_call(self, method, url, params=None, api_checker=None, **kwargs):
+        response = await async_retry_wrapper(
+            self._api_call, html_checker_wrapper(api_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
+            method, url, params, **kwargs)
+        self.logger.debug('{} loaded'.format(response['url']))
         if not response['ok']:
-            self.logger.error('Fail to load {}. {}'.format(response['url'], response['error']))
+            self.logger.error('Fail to load {}. {}'.format(response.get('url'), response['error']))
             self.fail_load_html.append({'url': url, 'params': params})
-        await asyncio.sleep(time_sleep)
+        await asyncio.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    def save_html(self, html, file_path, file_name, verbose=False, **kwargs):
-        self.io.save_file(html, file_path, file_name, 'html', verbose, **kwargs)
+    def save_html(self, html, file_path, file_name, **kwargs):
+        self.io.save_file(html, file_path, file_name, 'html', **kwargs)
         self.io.notify_fail_file(True)
 
-    def save_api(self, data, file_path, file_name, verbose=False, **kwargs):
-        self.io.save_file(data, file_path, file_name, 'txt', verbose, **kwargs)
+    def save_api(self, data, file_path, file_name, **kwargs):
+        self.io.save_file(data, file_path, file_name, 'txt', **kwargs)
         self.io.notify_fail_file(True)
 
     @ staticmethod
@@ -286,6 +302,7 @@ class WebScrapper(WebScrapperSetting):
         url_list = [self.extend_url(url, param) for param in params]
         return self.match_url_file_name(url_list, file_name_list)
 
+    '''
     def save_multiple_html(self, mode, response, file_path, file_name_dict, verbose=False, **kwargs):
         data_list = [(rep['url'], rep['message']) for rep in response if rep['ok']]
         url_list, html_list = ([data[index] for data in data_list] for index in range(2))
@@ -297,78 +314,80 @@ class WebScrapper(WebScrapperSetting):
         url_list, api_list = ([data[index] for data in data_list] for index in range(2))
         file_name_list = [file_name_dict[url] for url in url_list]
         self.io.save_multiple_files(mode, api_list, file_path, file_name_list, 'txt', verbose, **kwargs)
+    '''
 
-    def load_multiple_html(self, url_list, static=True, html_checker=None, asyn=True, time_sleep=0, verbose=False,
-                           notify_fail=True):
+    def load_multiple_html(self, url_list, file_name_list, file_path, static=True, html_checker=None, asyn=True):
         self.clear_fail_load_list()
+        url_file_dict = self.match_url_file_name(url_list, file_name_list)
         if asyn:
-            if not isinstance(static, list):
-                tasks = [asyncio.ensure_future(self.async_load_html(url, static, html_checker, time_sleep, verbose))
-                         for url in url_list]
-            else:
-                tasks = [asyncio.ensure_future(self.async_load_html(url, stat, html_checker, time_sleep, verbose))
-                         for url, stat in zip(url_list, static)]
-            response = self.loop.run_until_complete(asyncio.gather(*tasks))
+            async def async_load_save_html(url):
+                resp = await self.async_load_html(url, static, html_checker)
+                if resp['ok']:
+                    file_name = url_file_dict[url]
+                    self.save_html(resp['message'], file_path, file_name)
+            tasks = [asyncio.ensure_future(async_load_save_html(url)) for url in url_list]
+            self.loop.run_until_complete(asyncio.gather(*tasks))
         else:
-            if not isinstance(static, list):
-                response = list(map(lambda url: self.load_html(url, static, html_checker, time_sleep, verbose),
-                                    url_list))
-                # with ThreadPoolExecutor(max_workers=self.WEB_SCRAPPER_SEMAPHORE) as executor:
-                #     response = list(executor.map(lambda url: self.load_html(url, static, html_checker, time_sleep,
-                #                                                             verbose), url_list))
-            else:
-                response = list(map(lambda url, stat: self.load_html(url, stat, html_checker, time_sleep, verbose),
-                                    url_list, static))
-                # with ThreadPoolExecutor(max_workers=self.WEB_SCRAPPER_SEMAPHORE) as executor:
-                #     response = list(executor.map(lambda url, stat: self.load_html(url, stat, html_checker, time_sleep,
-                #                     verbose), url_list, static))
-        if notify_fail:
-            self.notify_fail_html(True)
+            def load_save_html(url):
+                resp = self.load_html(url, static, html_checker)
+                if resp['ok']:
+                    file_name = url_file_dict[url]
+                    self.save_html(resp['message'], file_path, file_name)
+                list(map(load_save_html, url_list))
+        self.notify_fail_html(True)
         self.save_fail_load_list()
-        return response
 
-    def browse_multiple_html(self, url_list, extra_action=None, *args, html_checker=None, asyn=True, time_sleep=0,
-                             verbose=False, notify_fail=True):
+    def browse_multiple_html(self, url_list, file_name_list, file_path, extra_action=None, *args, html_checker=None,
+                             asyn=True):
         self.clear_fail_load_list()
+        url_file_dict = self.match_url_file_name(url_list, file_name_list)
         if asyn:
-            tasks = [asyncio.ensure_future(self.async_browser_simulator(
-                url, extra_action, *args, html_checker=html_checker, time_sleep=time_sleep, verbose=verbose))
-                     for url in url_list]
-            response = self.loop.run_until_complete(asyncio.gather(*tasks))
+            async def async_browse_save_html(url):
+                resp = await self.async_browser_simulator(url, extra_action, *args, html_checker)
+                if resp['ok']:
+                    file_name = url_file_dict[url]
+                    self.save_html(resp['message'], file_path, file_name)
+            tasks = [asyncio.ensure_future(async_browse_save_html(url)) for url in url_list]
+            self.loop.run_until_complete(asyncio.gather(*tasks))
         else:
-            response = list(map(lambda url: self.browser_simulator(
-                url, extra_action, *args, html_checker=html_checker, time_sleep=time_sleep, verbose=verbose),
-                                url_list))
-        if notify_fail:
-            self.notify_fail_html(False)
+            def browse_save_html(url):
+                resp = self.browser_simulator(url, extra_action, *args, html_checker)
+                if resp['ok']:
+                    file_name = url_file_dict[url]
+                    self.save_html(resp['message'], file_path, file_name)
+            list(map(browse_save_html, url_list))
+        self.notify_fail_html(False)
         self.save_fail_load_list()
-        return response
 
-    def load_multiple_api(self, method, url_list, params=None, api_checker=None, asyn=True, time_sleep=0, verbose=False,
-                          notify_fail=True, **kwargs):
+    def load_multiple_api(self, method, url_list, file_name_list, file_path, params=None, api_checker=None, asyn=True,
+                          **kwargs):
         self.clear_fail_load_list()
+        url_file_dict = self.match_url_file_name(url_list, params, file_name_list)
         if asyn:
+            async def async_api_call_save(url, param):
+                resp = await self.async_api_call(method, url, param, api_checker, **kwargs)
+                if resp['ok']:
+                    file_name = url_file_dict[self.extend_url(url, param)]
+                    self.save_api(resp['message'], file_path, file_name)
             if not isinstance(params, list):
-                tasks = [asyncio.ensure_future(self.async_api_call(method, url, params, api_checker, time_sleep,
-                                                                   verbose, **kwargs))
-                         for url in url_list]
+                tasks = [asyncio.ensure_future(async_api_call_save(url, params)) for url in url_list]
             else:
-                tasks = [asyncio.ensure_future(self.async_api_call(method, url, param, api_checker, time_sleep, verbose,
-                                                                   **kwargs))
-                         for url, param in zip(url_list, params)]
-            response = self.loop.run_until_complete(asyncio.gather(*tasks))
+                tasks = [asyncio.ensure_future(async_api_call_save(url, param)) for url, param in zip(url_list, params)]
+            self.loop.run_until_complete(asyncio.gather(*tasks))
         else:
+            def api_call_save(url, param):
+                resp = self.api_call(method, url, param, api_checker, **kwargs)
+                if resp['ok']:
+                    file_name = url_file_dict[self.extend_url(url, param)]
+                    self.save_api(resp['message'], file_path, file_name)
             if not isinstance(params, list):
-                response = list(map(lambda url: self.api_call(method, url, params, api_checker, time_sleep, verbose,
-                                                              **kwargs), url_list))
+                list(map(lambda u: api_call_save(u, params), url_list))
             else:
-                response = list(map(lambda url, param: self.api_call(method, url, param, api_checker, time_sleep,
-                                                                     verbose, **kwargs), url_list, params))
-        if notify_fail:
-            self.notify_fail_html(True)
+                list(map(api_call_save, url_list, params))
+        self.notify_fail_html(True)
         self.save_fail_load_list()
-        return response
 
+    '''
     def retry_load_multiple_html(self, html_checker=None, file_name=None, asyn=True, verbose=False):
         if file_name is not None:
             self.load_fail_load_list(file_name)
@@ -395,15 +414,9 @@ class WebScrapper(WebScrapperSetting):
         url_list, params = ([fail[index] for fail in fail_load_html] for index in range(2))
         response = self.load_multiple_api(method, url_list, params, api_checker, asyn, verbose, **kwargs)
         return response
+    '''
 
-    def clear_temp_fail_html(self):
-        file_key = 'web_scrapper_fail_load_list_'
-        fail_file_list = os.listdir(TEMP_PATH)
-        fail_file_list = [os.path.join(TEMP_PATH, fail_file) for fail_file in fail_file_list
-                          if file_key in fail_file]
-        [os.remove(fail_file) for fail_file in fail_file_list]
-
-
+'''
 def static_html_checker(html):
     return check_html_element_exist(html, 'table.color_white')
 
@@ -663,6 +676,7 @@ if __name__ == '__main__':
         test_fail_api('get', url_list, params_list, file_name_list, test_api_checker)
     elif run_test_renew_ip:
         test_renew_ip()
+'''
 
 
 
