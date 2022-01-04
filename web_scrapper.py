@@ -22,14 +22,13 @@ from netdata_utilities import html_checker_wrapper, randomize_consecutive_sleep,
 
 class WebScrapper(object):
 
-    SEMAPHORE = 1000
+    SEMAPHORE = 100
     BROWSER = 'chrome'
     SERVICE_REF = {'chrome': 'Chromedriver', 'firefox': 'Geckodriver'}
     NOTIFIER = 'slack'
     NUM_RETRY = 3
     RETRY_SLEEP = 10
     CONSECUTIVE_SLEEP = (0, 30)
-    BROWSER_WAIT = 10
     EXCEPTION_ERROR_CODE = 999
     PREFIX_FAIL_FILE = 'web_scrapper_fail_load_list_'
 
@@ -53,9 +52,6 @@ class WebScrapper(object):
     def set_retry_sleep(self, retry_sleep):
         self.RETRY_SLEEP = retry_sleep
 
-    def set_browser_wait(self, browser_wait):
-        self.BROWSER_WAIT = browser_wait
-
     def set_consecutive_sleep(self, lower_time, upper_time):
         self.CONSECUTIVE_SLEEP = (lower_time, upper_time)
 
@@ -76,7 +72,7 @@ class WebScrapper(object):
                 args.append('--no-sandbox')
                 args.append('--disable-dev-shm-usage')
             args = {'args': args}
-            self.browser = getattr(browsers, self.BROWSER.capitalize())(**{'{}Options'.format(self.BROWSER): args})
+            self.browser = getattr(browsers, self.BROWSER.capitalize())(**{'goog:{}Options'.format(self.BROWSER): args})
 
     def get_notifier(self):
         self.notifier = get_notifier(self.NOTIFIER, self.project, self.logger)
@@ -132,6 +128,8 @@ class WebScrapper(object):
             driver.get(url)
             driver = extra_action(driver, *args)
             response = {'ok': True, 'message': driver.page_source, 'url': url}
+            self.driver.close()
+            self.driver = None
         except Exception as e:
             response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
         return response
@@ -144,6 +142,7 @@ class WebScrapper(object):
                 await session.get(url)
                 session = await async_extra_action(session, *args)
                 html = await session.get_page_source()
+                await session.close()
             response = {'ok': True, 'message': html, 'url': url}
         except Exception as e:
             response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
@@ -192,7 +191,7 @@ class WebScrapper(object):
     def save_fail_load_list(self):
         if len(self.fail_load_html) > 0:
             file_name = self.PREFIX_FAIL_FILE + '{}.txt'.format(int(time.time()))
-            self.io.save_file(self.fail_load_html, Path.TEMP_FOLDER, file_name, 'txt')
+            self.io.save_file(json.dumps(self.fail_load_html), Path.TEMP_FOLDER, file_name, 'txt')
             self.io.notify_fail_file(True)
 
     def clear_temp_fail_file(self):
@@ -218,8 +217,9 @@ class WebScrapper(object):
         response = retry_wrapper(
             self._load_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
             url, static)
-        self.logger.debug('{} loaded'.format(response['url']))
-        if not response['ok']:
+        if response['ok']:
+            self.logger.debug('{} loaded'.format(response['url']))
+        else:
             self.logger.error('Fail to load {}. {}'.format(response.get('url', url), response['error']))
             self.fail_load_html.append({'url': url, 'static': static})
         time.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
@@ -229,8 +229,9 @@ class WebScrapper(object):
         response = await async_retry_wrapper(
             self._async_load_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
             url, static)
-        self.logger.debug('{} loaded'.format(response['url']))
-        if not response['ok']:
+        if response['ok']:
+            self.logger.debug('{} loaded'.format(response['url']))
+        else:
             self.logger.error('Fail to load {}. {}'.format(response.get('url', url), response['error']))
             self.fail_load_html.append({'url': url, 'static': static})
         await asyncio.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
@@ -242,12 +243,11 @@ class WebScrapper(object):
         response = retry_wrapper(
             self._browse_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
             url, extra_action, *args)
-        self.logger.debug('{} loaded'.format(response['url']))
-        if not response['ok']:
+        if response['ok']:
+            self.logger.debug('{} loaded'.format(response['url']))
+        else:
             self.logger.error('Fail to load {}. {}'.format(response.get('url', url), response['error']))
             self.fail_load_html.append({'url': url, 'args': args})
-        self.driver.close()
-        self.driver = None
         time.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
@@ -255,10 +255,11 @@ class WebScrapper(object):
         if self.browser is None:
             self.get_browser(True)
         response = await async_retry_wrapper(
-            self._browse_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
+            self._async_browse_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
             url, async_extra_action, *args)
-        self.logger.debug('{} loaded'.format(response['url']))
-        if not response['ok']:
+        if response['ok']:
+            self.logger.debug('{} loaded'.format(response['url']))
+        else:
             self.logger.error('Fail to load {}. {}'.format(response.get('url', url), response['error']))
             self.fail_load_html.append({'url': url, 'args': args})
         await asyncio.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
@@ -268,8 +269,9 @@ class WebScrapper(object):
         response = retry_wrapper(
             self._api_call, html_checker_wrapper(api_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
             method, url, params, **kwargs)
-        self.logger.debug('{} loaded'.format(response['url']))
-        if not response['ok']:
+        if response['ok']:
+            self.logger.debug('{} loaded'.format(response['url']))
+        else:
             self.logger.error('Fail to load {}. {}'.format(response.get('url', url), response['error']))
             self.fail_load_html.append({'url': url, 'params': params})
         time.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
@@ -279,8 +281,9 @@ class WebScrapper(object):
         response = await async_retry_wrapper(
             self._api_call, html_checker_wrapper(api_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
             method, url, params, **kwargs)
-        self.logger.debug('{} loaded'.format(response['url']))
-        if not response['ok']:
+        if response['ok']:
+            self.logger.debug('{} loaded'.format(response['url']))
+        else:
             self.logger.error('Fail to load {}. {}'.format(response.get('url'), response['error']))
             self.fail_load_html.append({'url': url, 'params': params})
         await asyncio.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))

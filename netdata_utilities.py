@@ -27,7 +27,7 @@ def message_checker(response, html_checker=None):
         if html_check['status']:
             result = {'status': True}
         else:
-            result = {'status': False, 'message': html_check['message'], 'code': None}
+            result = {'status': False, 'message': html_check['message'], 'code': None, 'terminate': True}
     return result
 
 
@@ -88,6 +88,26 @@ class ResponseChecker(object):
                 return {'status': False, 'message': 'Key {} does not have value {}'.format(key, value)}
 
     @ staticmethod
+    def check_api_result_has_content(data, key_list):
+        if isinstance(data, str):
+            data = json.loads(data)
+        elif isinstance(data, bytes):
+            data = json.load(data)
+        if key_list[0] not in data:
+            return {'status': False, 'message': 'Key {} not exist'.format(key_list[0])}
+        for ind, key in enumerate(key_list[:-1]):
+            outer_key = key_list[ind]
+            inner_key = key_list[ind - 1]
+            if inner_key not in data[outer_key]:
+                return {'status': False, 'message': 'Key {} not exist'.format(key)}
+            data = data[outer_key]
+        data = data[key_list[-1]]
+        if data is not None and len(data) > 0:
+            return {'status': True}
+        else:
+            return {'status': False, 'message': 'Key {} has no content'.format(key_list[-1])}
+
+    @ staticmethod
     def check_api_text_exist(data, text):
         if text in data:
             return {'status': True}
@@ -101,6 +121,14 @@ class ResponseChecker(object):
             return {'status': True}
         else:
             return {'status': False, 'message': 'Element {} not appearing at least {} times'.format(element, min_times)}
+
+    @ staticmethod
+    def check_either_html_element_exist(html, element_list):
+        soup = BeautifulSoup(html, 'html.parser')
+        if sum([len(soup.select(element)) for element in element_list]) > 0:
+            return {'status': True}
+        else:
+            return {'status': False, 'message': 'None of Element {} appearing'.format(','.join(element_list))}
 
     @ staticmethod
     def check_html_text_exist(html, text, min_times=1):
