@@ -1,5 +1,6 @@
 from requests_html import HTMLSession, AsyncHTMLSession
 from selenium import webdriver
+from selenium_stealth import stealth
 import asyncio
 from arsenic import browsers, services, get_session
 import urllib
@@ -7,6 +8,7 @@ import json
 import os
 import sys
 import time
+import tqdm
 sys.path.append(os.environ['SCTYS_PROJECT'] + '/sctys_global_parameters')
 from global_parameters import Path
 sys.path.append(Path.UTILITIES_PROJECT)
@@ -17,12 +19,16 @@ sys.path.append(Path.IO_PROJECT)
 from file_io import FileIO
 from stem import Signal
 from stem.control import Controller
-from netdata_utilities import html_checker_wrapper, randomize_consecutive_sleep, ResponseChecker, BrowserAction
+from requests_ip_rotator import ApiGateway
+from password import tor_password
+from aws_api import aws_api
+from netdata_utilities import html_checker_wrapper, randomize_consecutive_sleep, ResponseChecker, BrowserAction, \
+    get_random_user_agent
 
 
 class WebScrapper(object):
 
-    SEMAPHORE = 100
+    SEMAPHORE = 10
     BROWSER = 'chrome'
     SERVICE_REF = {'chrome': 'Chromedriver', 'firefox': 'Geckodriver'}
     NOTIFIER = 'slack'
@@ -31,16 +37,21 @@ class WebScrapper(object):
     CONSECUTIVE_SLEEP = (0, 30)
     EXCEPTION_ERROR_CODE = 999
     PREFIX_FAIL_FILE = 'web_scrapper_fail_load_list_'
+    PROXIES = {'http': 'socks5://127.0.0.1:9050', 'https': 'socks5://127.0.0.1:9050'}
+    RENEW_IP = False
+    GOOGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d'
+    GOOGLE_SHEET_CSV_FILE_REPLACE = ('/edit#gid=', '/export?format=csv&gid=')
 
     def __init__(self, project, logger):
         self.project = project
         self.logger = logger
-        self.session = HTMLSession()
-        self.asession = AsyncHTMLSession()
+        self.session = None
+        self.asession = None
         self.driver = None
         self.service = None
         self.browser = None
         self.notifier = None
+        self.gateway = None
         self.io = FileIO(project, logger)
         self.loop = asyncio.get_event_loop()
         self.sema = asyncio.Semaphore(self.SEMAPHORE)
@@ -55,47 +66,111 @@ class WebScrapper(object):
     def set_consecutive_sleep(self, lower_time, upper_time):
         self.CONSECUTIVE_SLEEP = (lower_time, upper_time)
 
-    def get_browser(self, asyn=False):
+    def get_browser(self, asyn=False, long_life=False):
         if not asyn:
             options = getattr(webdriver, '{}Options'.format(self.BROWSER.capitalize()))()
-            options.add_argument('--headless')
             if self.BROWSER == 'chrome':
                 options.add_argument('--no-sandbox')
+                options.add_argument('--headless')
+                # options.add_argument('--window-size=1920,1080')
+                options.add_argument('--user-agent={}'.format(get_random_user_agent()))
+                options.add_argument('--disable-blink-features=AutomationControlled')
                 options.add_argument('--disable-gpu')
                 options.add_argument('--disable-dev-shm-usage')
-            self.driver = getattr(webdriver, self.BROWSER.capitalize())(**{'{}_options'.format(self.BROWSER): options})
+                # options.add_argument('--remote-debugging-port=9222')
+                # boptions.add_experimental_option("excludeSwitches", ["enable-automation"])
+                # options.add_experimental_option('useAutomationExtension', False)
+            else:
+                options.add_argument('--headless')
+            driver = getattr(webdriver, self.BROWSER.capitalize())(**{'{}_options'.format(self.BROWSER): options})
+            stealth(driver,
+                    languages=["en-US", "en"],
+                    vendor="Google Inc.",
+                    platform="Win32",
+                    webgl_vendor="Intel Inc.",
+                    renderer="Intel Iris OpenGL Engine",
+                    fix_hairline=True,
+                    )
+            if long_life:
+                self.driver = driver
+            else:
+                return driver
         else:
-            self.service = getattr(services, self.SERVICE_REF[self.BROWSER])()
-            args = ['--headless']
+            service = getattr(services, self.SERVICE_REF[self.BROWSER])()
             if self.BROWSER == 'chrome':
-                args.append('--disable-gpu')
-                args.append('--no-sandbox')
-                args.append('--disable-dev-shm-usage')
+                args = ['--no-sandbox', '--headless', '--disable-gpu', '--disable-dev-shm-usage']
+            else:
+                args = ['--headless']
             args = {'args': args}
-            self.browser = getattr(browsers, self.BROWSER.capitalize())(**{'goog:{}Options'.format(self.BROWSER): args})
+            browser = getattr(browsers, self.BROWSER.capitalize())(**{'goog:{}Options'.format(self.BROWSER): args})
+            if long_life:
+                self.service = service
+                self.browser = browser
+            else:
+                return service, browser
 
     def get_notifier(self):
         self.notifier = get_notifier(self.NOTIFIER, self.project, self.logger)
 
+    def set_session(self, asyn=False):
+        if asyn:
+            self.asession = AsyncHTMLSession()
+        else:
+            self.session = HTMLSession()
 
-    '''
+    def close_session(self, asyn=False):
+        if asyn:
+            if self.asession is not None:
+                asyncio.run(self.asession.close())
+            self.asession = None
+        else:
+            if self.session is not None:
+                self.session.close()
+            self.session = None
+
+    def set_gateway(self, url):
+        self.gateway = ApiGateway(
+            '/'.join(url.split('/')[:3]), access_key_id=aws_api['id'], access_key_secret=aws_api['secret'])
+        self.gateway.start()
+
+    def close_gateway(self):
+        if self.gateway is not None:
+            self.gateway.shutdown()
+        self.gateway = None
+
+    def quit_driver(self):
+        if self.driver is not None:
+            self.driver.quit()
+        self.driver = None
+
     def renew_ip(self, asyn=True):
         with Controller.from_port(port=9051) as controller:
-            controller.authenticate(password=self.TOR_PASSWORD)
+            controller.authenticate(tor_password)
             controller.signal(Signal.NEWNYM)
         if asyn:
             self.asession = AsyncHTMLSession()
-            self.asession.proxies = self.WEB_SCRAPPER_PROXIES
+            self.asession.proxies = self.PROXIES
             self.asession.headers['User-Agent'] = get_random_user_agent()
         else:
             self.session = HTMLSession()
-            self.session.proxies = self.WEB_SCRAPPER_PROXIES
+            self.session.proxies = self.PROXIES
             self.session.headers['User-Agent'] = get_random_user_agent()
-    '''
 
-    def _load_html(self, url, static=True):
+    def _download_google_sheet_file(self, google_sheet_key):
+        google_sheet_file = google_sheet_key.replace(
+            self.GOOGLE_SHEET_CSV_FILE_REPLACE[0], self.GOOGLE_SHEET_CSV_FILE_REPLACE[1])
+        data = self.io.load_file(self.GOOGLE_SHEET_URL, google_sheet_file, 'csv')
+        return {'ok': True, 'message': data}
+
+    def download_google_sheet_file(self, google_sheet_key, response_checker):
+        response = retry_wrapper(
+            self._download_google_sheet_file, response_checker, self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
+            google_sheet_key)
+        return response
+
+    def _load_html_with_session(self, session, url, static=True):
         try:
-            html = self.session.get(url)
+            html = session.get(url)
             if html.status_code == 200:
                 if not static:
                     html.html.render()
@@ -106,10 +181,20 @@ class WebScrapper(object):
             response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
-    async def _async_load_html(self, url, static=True):
+    def _load_html(self, url, static=True, renew_ip=False):
+        if renew_ip:
+            with ApiGateway('/'.join(url.split('/')[:3]), access_key_id=aws_api['id'],
+                            access_key_secret=aws_api['secret']) as g, HTMLSession() as s:
+                s.mount(url, g)
+                response = self._load_html_with_session(s, url, static)
+        else:
+            with HTMLSession() as s:
+                response = self._load_html_with_session(s, url, static)
+        return response
+
+    async def _async_load_html_with_session(self, session, url, static=True):
         try:
-            async with self.sema:
-                html = await self.asession.get(url)
+            html = await session.get(url)
             if html.status_code == 200:
                 if not static:
                     await html.html.arender()
@@ -120,29 +205,47 @@ class WebScrapper(object):
             response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
+    async def _async_load_html(self, url, static=True, renew_ip=False):
+        if renew_ip:
+            with ApiGateway('/'.join(url.split('/')[:3]), access_key_id=aws_api['id'],
+                            access_key_secret=aws_api['secret']) as g:
+                async with AsyncHTMLSession() as s:
+                    await s.mount(url, g)
+                    response = await self._async_load_html_with_session(s, url, static)
+        else:
+            async with self.sema:
+                with AsyncHTMLSession() as s:
+                    response = await self._async_load_html_with_session(s, url, static)
+        return response
+
     def _browse_html(self, url, extra_action=None, *args):
+        with self.get_browser() as d:
+            response = self._browse_html_with_driver(d, url, extra_action, *args)
+        return response
+
+    def _browse_html_with_driver(self, driver, url, extra_action=None, *args):
         if extra_action is None:
             extra_action = BrowserAction.dummy_action
         try:
-            driver = self.driver
             driver.get(url)
             driver = extra_action(driver, *args)
             response = {'ok': True, 'message': driver.page_source, 'url': url}
-            self.driver.close()
-            self.driver = None
         except Exception as e:
             response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
     async def _async_browse_html(self, url, async_extra_action=None, *args):
+        async with self.sema, get_session(*self.get_browser(True)) as session:
+            response = await self._async_browse_html_with_session(session, url, async_extra_action, *args)
+        return response
+
+    async def _async_browse_html_with_session(self, session, url, async_extra_action=None, *args):
         if async_extra_action is None:
             async_extra_action = BrowserAction.async_dummy_action
         try:
-            async with self.sema, get_session(self.service, self.browser) as session:
-                await session.get(url)
-                session = await async_extra_action(session, *args)
-                html = await session.get_page_source()
-                await session.close()
+            await session.get(url)
+            session = await async_extra_action(session, *args)
+            html = await session.get_page_source()
             response = {'ok': True, 'message': html, 'url': url}
         except Exception as e:
             response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
@@ -155,11 +258,11 @@ class WebScrapper(object):
         else:
             return '?'.join([url, urllib.parse.urlencode(params)])
 
-    def _api_call(self, method, url, params=None, **kwargs):
+    def _api_call_with_session(self, session, method, url, params=None, **kwargs):
         if params is None:
             params = {}
         try:
-            data = getattr(self.session, method)(url, params=params, **kwargs)
+            data = getattr(session, method)(url, params=params, **kwargs)
             if data.status_code == 200:
                 response = {'ok': True, 'message': data.html.html, 'url': self.extend_url(url, params)}
             else:
@@ -170,11 +273,24 @@ class WebScrapper(object):
                         'url': self.extend_url(url, params)}
         return response
 
-    async def _async_api_call(self, method, url, params=None, **kwargs):
+    def _api_call(self, method, url, params=None, renew_ip=False, **kwargs):
+        if renew_ip:
+            with ApiGateway('/'.join(url.split('/')[:3]), access_key_id=aws_api['id'],
+                            access_key_secret=aws_api['secret']) as g:
+                with HTMLSession() as s:
+                    s.mount(url, g)
+                    response = self._api_call_with_session(s, method, url, params, **kwargs)
+        else:
+            with HTMLSession() as s:
+                response = self._api_call_with_session(s, method, url, params, **kwargs)
+        return response
+
+    async def _async_api_call_with_session(self, session, method, url, params=None, **kwargs):
         if params is None:
             params = {}
         try:
-            data = await getattr(self.asession, method)(url, params=params, **kwargs)
+            async with self.sema:
+                data = await getattr(session, method)(url, params=params, **kwargs)
             if data.status_code == 200:
                 response = {'ok': True, 'message': data.html.html, 'url': self.extend_url(url, params)}
             else:
@@ -183,6 +299,18 @@ class WebScrapper(object):
         except Exception as e:
             response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE,
                         'url': self.extend_url(url, params)}
+        return response
+
+    async def _async_api_call(self, method, url, params=None, renew_ip=False, **kwargs):
+        if renew_ip:
+            with ApiGateway('/'.join(url.split('/')[:3]), access_key_id=aws_api['id'],
+                            access_key_secret=aws_api['secret']) as g:
+                async with AsyncHTMLSession() as s:
+                    s.mount(url, g)
+                    response = await self._async_api_call_with_session(s, method, url, params, **kwargs)
+        else:
+            with AsyncHTMLSession() as s:
+                response = await self._async_api_call_with_session(s, method, url, params, **kwargs)
         return response
 
     def clear_fail_load_list(self):
@@ -200,7 +328,7 @@ class WebScrapper(object):
                           if self.PREFIX_FAIL_FILE in fail_file]
         [os.remove(fail_file) for fail_file in fail_file_list]
 
-    def notify_fail_html(self, load):
+    def notify_fail_html(self, load, log_only=True):
         if self.notifier is None:
             self.get_notifier()
         if load:
@@ -211,12 +339,32 @@ class WebScrapper(object):
         fail_list_str = '\n'.join(fail_list_html)
         if len(fail_list_str) > 0:
             message = 'The following html were not {} successfully:\n\n'.format(operation) + fail_list_str
-            self.notifier.retry_send_message(message)
+            self.notifier.retry_send_message(message, log_only)
 
-    def load_html(self, url, static=True, html_checker=None):
+    def log_fail_html(self, load):
+        if load:
+            operation = 'loaded'
+        else:
+            operation = 'browsed'
+        fail_list_html = [json.dumps(fail) for fail in self.fail_load_html]
+        fail_list_str = '\n'.join(fail_list_html)
+        if len(fail_list_str) > 0:
+            message = 'The following html were not {} successfully:\n\n'.format(operation) + fail_list_str
+            self.logger.error(message)
+
+    def notify_ratio_fail_url(self, url_list, log_only=True):
+        if self.notifier is None:
+            self.get_notifier()
+        no_fail_url = len(self.fail_load_html)
+        no_url = len(url_list)
+        if no_fail_url > 0:
+            message = 'The urls starting with {} has {} out of {} fail url'.format(url_list[0], no_fail_url, no_url)
+            self.notifier.retry_send_message(message, log_only)
+
+    def load_html(self, url, static=True, html_checker=None, renew_ip=False):
         response = retry_wrapper(
             self._load_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
-            url, static)
+            url, static, renew_ip)
         if response['ok']:
             self.logger.debug('{} loaded'.format(response['url']))
         else:
@@ -225,10 +373,10 @@ class WebScrapper(object):
         time.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    async def async_load_html(self, url, static=True, html_checker=None):
+    async def async_load_html(self, url, static=True, html_checker=None, renew_ip=False):
         response = await async_retry_wrapper(
             self._async_load_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
-            url, static)
+            url, static, renew_ip)
         if response['ok']:
             self.logger.debug('{} loaded'.format(response['url']))
         else:
@@ -239,10 +387,13 @@ class WebScrapper(object):
 
     def browser_simulator(self, url, extra_action=None, *args, html_checker=None):
         if self.driver is None:
-            self.get_browser()
-        response = retry_wrapper(
-            self._browse_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
-            url, extra_action, *args)
+            response = retry_wrapper(
+                self._browse_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
+                url, extra_action, *args)
+        else:
+            response = retry_wrapper(
+                self._browse_html_with_driver, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP,
+                self.logger)(self.driver, url, extra_action, *args)
         if response['ok']:
             self.logger.debug('{} loaded'.format(response['url']))
         else:
@@ -265,10 +416,17 @@ class WebScrapper(object):
         await asyncio.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    def api_call(self, method, url, params=None, api_checker=None, **kwargs):
-        response = retry_wrapper(
-            self._api_call, html_checker_wrapper(api_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
-            method, url, params, **kwargs)
+    def api_call(self, method, url, params=None, api_checker=None, renew_ip=False, **kwargs):
+        if self.session is None:
+            response = retry_wrapper(
+                self._api_call, html_checker_wrapper(api_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
+                method, url, params, renew_ip, **kwargs)
+        else:
+            if self.gateway is not None:
+                self.session.mount(url, self.gateway)
+            response = retry_wrapper(
+                self._api_call_with_session, html_checker_wrapper(api_checker), self.NUM_RETRY, self.RETRY_SLEEP,
+                self.logger)(self.session, method, url, params, **kwargs)
         if response['ok']:
             self.logger.debug('{} loaded'.format(response['url']))
         else:
@@ -277,10 +435,17 @@ class WebScrapper(object):
         time.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    async def async_api_call(self, method, url, params=None, api_checker=None, **kwargs):
-        response = await async_retry_wrapper(
-            self._api_call, html_checker_wrapper(api_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
-            method, url, params, **kwargs)
+    async def async_api_call(self, method, url, params=None, api_checker=None, renew_ip=False, **kwargs):
+        if self.asession is None:
+            response = await async_retry_wrapper(
+                self._async_api_call, html_checker_wrapper(api_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
+                method, url, params, renew_ip, **kwargs)
+        else:
+            if self.gateway is not None:
+                self.asession.mount(url, self.gateway)
+            response = await async_retry_wrapper(
+                self._async_api_call_with_session, html_checker_wrapper(api_checker), self.NUM_RETRY, self.RETRY_SLEEP,
+                self.logger)(self.asession, method, url, params, **kwargs)
         if response['ok']:
             self.logger.debug('{} loaded'.format(response['url']))
         else:
@@ -301,8 +466,12 @@ class WebScrapper(object):
     def match_url_file_name(url_list, file_name_list):
         return {url: file_name for url, file_name in zip(url_list, file_name_list)}
 
-    def match_params_file_name(self, url, params, file_name_list):
-        url_list = [self.extend_url(url, param) for param in params]
+    def match_params_file_name(self, url_list, params, file_name_list):
+        if isinstance(params, list):
+            url_list = [self.extend_url(url, param) for url, param in zip(url_list, params)]
+        elif isinstance(params, dict):
+            url_list = [self.extend_url(url, params) for url in url_list]
+        assert len(url_list) == len(file_name_list), 'Unequal number of url and file_name'
         return self.match_url_file_name(url_list, file_name_list)
 
     '''
@@ -319,12 +488,13 @@ class WebScrapper(object):
         self.io.save_multiple_files(mode, api_list, file_path, file_name_list, 'txt', verbose, **kwargs)
     '''
 
-    def load_multiple_html(self, url_list, file_name_list, file_path, static=True, html_checker=None, asyn=True):
+    def load_multiple_html(self, url_list, file_name_list, file_path, static=True, html_checker=None, asyn=True,
+                           renew_ip=False, log_only=True):
         self.clear_fail_load_list()
         url_file_dict = self.match_url_file_name(url_list, file_name_list)
         if asyn:
             async def async_load_save_html(url):
-                resp = await self.async_load_html(url, static, html_checker)
+                resp = await self.async_load_html(url, static, html_checker, renew_ip)
                 if resp['ok']:
                     file_name = url_file_dict[url]
                     self.save_html(resp['message'], file_path, file_name)
@@ -332,21 +502,22 @@ class WebScrapper(object):
             self.loop.run_until_complete(asyncio.gather(*tasks))
         else:
             def load_save_html(url):
-                resp = self.load_html(url, static, html_checker)
+                resp = self.load_html(url, static, html_checker, renew_ip)
                 if resp['ok']:
                     file_name = url_file_dict[url]
                     self.save_html(resp['message'], file_path, file_name)
-                list(map(load_save_html, url_list))
-        self.notify_fail_html(True)
+            list(map(load_save_html, tqdm.tqdm(url_list)))
+        self.notify_ratio_fail_url(url_list, log_only)
+        self.log_fail_html(True)
         self.save_fail_load_list()
 
     def browse_multiple_html(self, url_list, file_name_list, file_path, extra_action=None, *args, html_checker=None,
-                             asyn=True):
+                             asyn=True, log_only=True):
         self.clear_fail_load_list()
         url_file_dict = self.match_url_file_name(url_list, file_name_list)
         if asyn:
             async def async_browse_save_html(url):
-                resp = await self.async_browser_simulator(url, extra_action, *args, html_checker)
+                resp = await self.async_browser_simulator(url, extra_action, *args, html_checker=html_checker)
                 if resp['ok']:
                     file_name = url_file_dict[url]
                     self.save_html(resp['message'], file_path, file_name)
@@ -354,40 +525,44 @@ class WebScrapper(object):
             self.loop.run_until_complete(asyncio.gather(*tasks))
         else:
             def browse_save_html(url):
-                resp = self.browser_simulator(url, extra_action, *args, html_checker)
+                resp = self.browser_simulator(url, extra_action, *args, html_checker=html_checker)
                 if resp['ok']:
                     file_name = url_file_dict[url]
                     self.save_html(resp['message'], file_path, file_name)
-            list(map(browse_save_html, url_list))
-        self.notify_fail_html(False)
+            list(map(browse_save_html, tqdm.tqdm(url_list)))
+        self.notify_ratio_fail_url(url_list, log_only)
+        self.log_fail_html(False)
         self.save_fail_load_list()
 
-    def load_multiple_api(self, method, url_list, file_name_list, file_path, params=None, api_checker=None, asyn=True,
-                          **kwargs):
+    def load_multiple_api(self, method, url_list, file_name_list, file_path, params=None, api_checker=None,
+                          renew_ip=False, asyn=True, log_only=True, **kwargs):
         self.clear_fail_load_list()
-        url_file_dict = self.match_url_file_name(url_list, params, file_name_list)
+        url_file_dict = self.match_params_file_name(url_list, params, file_name_list)
         if asyn:
             async def async_api_call_save(url, param):
-                resp = await self.async_api_call(method, url, param, api_checker, **kwargs)
+                resp = await self.async_api_call(method, url, param, api_checker, renew_ip, **kwargs)
                 if resp['ok']:
                     file_name = url_file_dict[self.extend_url(url, param)]
                     self.save_api(resp['message'], file_path, file_name)
+
             if not isinstance(params, list):
                 tasks = [asyncio.ensure_future(async_api_call_save(url, params)) for url in url_list]
+
             else:
                 tasks = [asyncio.ensure_future(async_api_call_save(url, param)) for url, param in zip(url_list, params)]
             self.loop.run_until_complete(asyncio.gather(*tasks))
         else:
             def api_call_save(url, param):
-                resp = self.api_call(method, url, param, api_checker, **kwargs)
+                resp = self.api_call(method, url, param, api_checker, renew_ip, **kwargs)
                 if resp['ok']:
                     file_name = url_file_dict[self.extend_url(url, param)]
                     self.save_api(resp['message'], file_path, file_name)
             if not isinstance(params, list):
-                list(map(lambda u: api_call_save(u, params), url_list))
+                list(map(lambda u: api_call_save(u, params), tqdm.tqdm(url_list)))
             else:
-                list(map(api_call_save, url_list, params))
-        self.notify_fail_html(True)
+                list(map(api_call_save, tqdm.tqdm(url_list), params))
+        self.notify_ratio_fail_url(url_list, log_only)
+        self.log_fail_html(True)
         self.save_fail_load_list()
 
     '''

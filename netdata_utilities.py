@@ -27,7 +27,8 @@ def message_checker(response, html_checker=None):
         if html_check['status']:
             result = {'status': True}
         else:
-            result = {'status': False, 'message': html_check['message'], 'code': None, 'terminate': True}
+            result = {'status': False, 'message': html_check['message'], 'code': None,
+                      'terminate': html_check.get('terminate', True)}
     return result
 
 
@@ -75,10 +76,13 @@ class ResponseChecker(object):
 
     @ staticmethod
     def check_api_element_exist(data, key, value=None):
-        if isinstance(data, str):
-            data = json.loads(data)
-        elif isinstance(data, bytes):
-            data = json.load(data)
+        try:
+            if isinstance(data, str):
+                data = json.loads(data)
+            elif isinstance(data, bytes):
+                data = json.load(data)
+        except json.decoder.JSONDecodeError:
+            return {'status': False, 'message': 'Improper json text {}'.format(data), 'terminate': False}
         if key in data and (value is None or data[key] == value):
             return {'status': True}
         else:
@@ -115,12 +119,60 @@ class ResponseChecker(object):
             return {'status': False, 'message': 'Text {} does not exist'.format(text)}
 
     @ staticmethod
+    def check_either_api_text_exist(data, text_list):
+        for text in text_list:
+            if text in data:
+                return {'status': True}
+        return {'status': False, 'message': 'None of {} exist'.format(','.join(text_list))}
+
+    @ staticmethod
     def check_html_element_exist(html, element, min_times=1):
         soup = BeautifulSoup(html, 'html.parser')
         if len(soup.select(element)) >= min_times:
             return {'status': True}
         else:
             return {'status': False, 'message': 'Element {} not appearing at least {} times'.format(element, min_times)}
+
+    @ staticmethod
+    def check_html_element_text_not_exist(html, element, txt):
+        soup = BeautifulSoup(html, 'html.parser')
+        if txt in soup.select(element)[0].text:
+            return {'status': False, 'message': '{} exist in element {}'.format(txt, element)}
+        else:
+            return {'status': True}
+
+    @ staticmethod
+    def check_html_element_text_exist(html, element, txt):
+        soup = BeautifulSoup(html, 'html.parser')
+        if soup.find(element, text=lambda t: t and txt in t):
+            return {'status': True}
+        else:
+            return {'status': False, 'message': '{} not exist in {}'.format(txt, element)}
+
+    @ staticmethod
+    def check_multiple_html_elements_exist(html, element_list, min_times=1):
+        soup = BeautifulSoup(html, 'html.parser')
+        if isinstance(min_times, list):
+            assert len(element_list) == len(min_times)
+            for element, min_t in zip(element_list, min_times):
+                if len(soup.select(element)) < min_t:
+                    return {'status': False,
+                            'message': 'Element {} not appearing at least {} times'.format(element, min_t)}
+        else:
+            for element in element_list:
+                if len(soup.select(element)) < min_times:
+                    return {'status': False,
+                            'message': 'Element {} not appearing at least {} times'.format(element, min_times)}
+        return {'status': True}
+
+
+    @staticmethod
+    def check_html_element_not_exist(html, element):
+        soup = BeautifulSoup(html, 'html.parser')
+        if len(soup.select(element)) == 0:
+            return {'status': True}
+        else:
+            return {'status': False, 'message': 'Element {} appearing'.format(element)}
 
     @ staticmethod
     def check_either_html_element_exist(html, element_list):
@@ -156,6 +208,17 @@ class BrowserAction(object):
             EC.visibility_of_element_located((By.CSS_SELECTOR, load_element)))
         return driver
 
+    @staticmethod
+    def wait_for_text(driver, element, text, browser_wait):
+        WebDriverWait(driver, browser_wait).until(
+            EC.text_to_be_present_in_element(element, text))
+        return driver
+
+    @ staticmethod
+    def wait(driver, browser_wait):
+        driver.implicitly_wait(browser_wait)
+        return driver
+
     @ staticmethod
     def select_dropdown_box(driver, dropdown_box_element, option_index, option_type, load_element, browser_wait):
         WebDriverWait(driver, browser_wait).until(
@@ -173,8 +236,8 @@ class BrowserAction(object):
         return driver
 
     @ staticmethod
-    async def async_wait_for_element(session, load_element):
-        await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, load_element)
+    async def async_wait_for_element(session, load_element, browser_wait):
+        await session.wait_for_element(browser_wait, load_element)
         return session
 
     @ staticmethod

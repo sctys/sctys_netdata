@@ -106,3 +106,4 @@ venv.bak/
 *.html
 *.json
 password.py
+aws_api.py
