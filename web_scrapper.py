@@ -20,10 +20,10 @@ from file_io import FileIO
 from stem import Signal
 from stem.control import Controller
 from requests_ip_rotator import ApiGateway
+from cloudscraper import CloudScraper
 from password import tor_password
-from aws_api import aws_api
-from netdata_utilities import html_checker_wrapper, randomize_consecutive_sleep, ResponseChecker, BrowserAction, \
-    get_random_user_agent
+from aws_api_ip_rotate import aws_api
+from netdata_utilities import html_checker_wrapper, randomize_consecutive_sleep, ResponseChecker, BrowserAction
 
 
 class WebScrapper(object):
@@ -66,27 +66,33 @@ class WebScrapper(object):
     def set_consecutive_sleep(self, lower_time, upper_time):
         self.CONSECUTIVE_SLEEP = (lower_time, upper_time)
 
-    def get_browser(self, asyn=False, long_life=False):
+    def get_browser(self, extra_options=None, asyn=False, long_life=False):
         if not asyn:
             options = getattr(webdriver, '{}Options'.format(self.BROWSER.capitalize()))()
+            user_agent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36' + \
+                ' (KHTML, like Gecko) Chrome/98.0.4758.80 Safari/537.36'
             if self.BROWSER == 'chrome':
                 options.add_argument('--no-sandbox')
                 options.add_argument('--headless')
-                # options.add_argument('--window-size=1920,1080')
-                options.add_argument('--user-agent={}'.format(get_random_user_agent()))
+                options.add_argument('--window-size=1920,1080')
+                options.add_argument('--user-agent={}'.format(user_agent))
                 options.add_argument('--disable-blink-features=AutomationControlled')
                 options.add_argument('--disable-gpu')
                 options.add_argument('--disable-dev-shm-usage')
                 # options.add_argument('--remote-debugging-port=9222')
-                # boptions.add_experimental_option("excludeSwitches", ["enable-automation"])
-                # options.add_experimental_option('useAutomationExtension', False)
+                options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                options.add_experimental_option('useAutomationExtension', False)
+                if extra_options is not None:
+                    for option in extra_options:
+                        options.add_argument(option)
             else:
                 options.add_argument('--headless')
             driver = getattr(webdriver, self.BROWSER.capitalize())(**{'{}_options'.format(self.BROWSER): options})
             stealth(driver,
+                    #user_agent=user_agent,
                     languages=["en-US", "en"],
                     vendor="Google Inc.",
-                    platform="Win32",
+                    platform="Linux",
                     webgl_vendor="Intel Inc.",
                     renderer="Intel Iris OpenGL Engine",
                     fix_hairline=True,
@@ -112,11 +118,14 @@ class WebScrapper(object):
     def get_notifier(self):
         self.notifier = get_notifier(self.NOTIFIER, self.project, self.logger)
 
-    def set_session(self, asyn=False):
+    def set_session(self, asyn=False, cloudflare=False):
         if asyn:
             self.asession = AsyncHTMLSession()
         else:
-            self.session = HTMLSession()
+            if cloudflare:
+                self.session = CloudScraper()
+            else:
+                self.session = HTMLSession()
 
     def close_session(self, asyn=False):
         if asyn:
@@ -150,11 +159,9 @@ class WebScrapper(object):
         if asyn:
             self.asession = AsyncHTMLSession()
             self.asession.proxies = self.PROXIES
-            self.asession.headers['User-Agent'] = get_random_user_agent()
         else:
             self.session = HTMLSession()
             self.session.proxies = self.PROXIES
-            self.session.headers['User-Agent'] = get_random_user_agent()
 
     def _download_google_sheet_file(self, google_sheet_key):
         google_sheet_file = google_sheet_key.replace(
@@ -174,18 +181,24 @@ class WebScrapper(object):
             if html.status_code == 200:
                 if not static:
                     html.html.render()
-                response = {'ok': True, 'message': html.html.html, 'url': url}
+                if hasattr(html, 'html'):
+                    response = {'ok': True, 'message': html.html.html, 'url': url}
+                else:
+                    response = {'ok': True, 'message': html.text, 'url': url}
             else:
                 response = {'ok': False, 'error': html.reason, 'error_code': html.status_code, 'url': url}
         except Exception as e:
             response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
-    def _load_html(self, url, static=True, renew_ip=False):
+    def _load_html(self, url, static=True, renew_ip=False, cloudflare=False):
         if renew_ip:
             with ApiGateway('/'.join(url.split('/')[:3]), access_key_id=aws_api['id'],
                             access_key_secret=aws_api['secret']) as g, HTMLSession() as s:
                 s.mount(url, g)
+                response = self._load_html_with_session(s, url, static)
+        elif cloudflare:
+            with CloudScraper() as s:
                 response = self._load_html_with_session(s, url, static)
         else:
             with HTMLSession() as s:
@@ -264,7 +277,10 @@ class WebScrapper(object):
         try:
             data = getattr(session, method)(url, params=params, **kwargs)
             if data.status_code == 200:
-                response = {'ok': True, 'message': data.html.html, 'url': self.extend_url(url, params)}
+                if hasattr(data, 'html'):
+                    response = {'ok': True, 'message': data.html.html, 'url': self.extend_url(url, params)}
+                else:
+                    response = {'ok': True, 'message': data.text, 'url': self.extend_url(url, params)}
             else:
                 response = {'ok': False, 'error': data.reason, 'error_code': data.status_code,
                             'url': self.extend_url(url, params)}
@@ -273,13 +289,16 @@ class WebScrapper(object):
                         'url': self.extend_url(url, params)}
         return response
 
-    def _api_call(self, method, url, params=None, renew_ip=False, **kwargs):
+    def _api_call(self, method, url, params=None, renew_ip=False, cloudflare=False, **kwargs):
         if renew_ip:
             with ApiGateway('/'.join(url.split('/')[:3]), access_key_id=aws_api['id'],
                             access_key_secret=aws_api['secret']) as g:
                 with HTMLSession() as s:
                     s.mount(url, g)
                     response = self._api_call_with_session(s, method, url, params, **kwargs)
+        elif cloudflare:
+            with CloudScraper() as s:
+                response = self._api_call_with_session(s, method, url, params, **kwargs)
         else:
             with HTMLSession() as s:
                 response = self._api_call_with_session(s, method, url, params, **kwargs)
@@ -361,10 +380,10 @@ class WebScrapper(object):
             message = 'The urls starting with {} has {} out of {} fail url'.format(url_list[0], no_fail_url, no_url)
             self.notifier.retry_send_message(message, log_only)
 
-    def load_html(self, url, static=True, html_checker=None, renew_ip=False):
+    def load_html(self, url, static=True, html_checker=None, renew_ip=False, cloudflare=False):
         response = retry_wrapper(
             self._load_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
-            url, static, renew_ip)
+            url, static, renew_ip, cloudflare)
         if response['ok']:
             self.logger.debug('{} loaded'.format(response['url']))
         else:
@@ -416,11 +435,11 @@ class WebScrapper(object):
         await asyncio.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    def api_call(self, method, url, params=None, api_checker=None, renew_ip=False, **kwargs):
+    def api_call(self, method, url, params=None, api_checker=None, renew_ip=False, cloudflare=False, **kwargs):
         if self.session is None:
             response = retry_wrapper(
                 self._api_call, html_checker_wrapper(api_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
-                method, url, params, renew_ip, **kwargs)
+                method, url, params, renew_ip, cloudflare, **kwargs)
         else:
             if self.gateway is not None:
                 self.session.mount(url, self.gateway)
@@ -457,10 +476,12 @@ class WebScrapper(object):
     def save_html(self, html, file_path, file_name, **kwargs):
         self.io.save_file(html, file_path, file_name, 'html', **kwargs)
         self.io.notify_fail_file(True)
+        self.io.clear_fail_save_list()
 
     def save_api(self, data, file_path, file_name, **kwargs):
         self.io.save_file(data, file_path, file_name, 'txt', **kwargs)
         self.io.notify_fail_file(True)
+        self.io.clear_fail_save_list()
 
     @ staticmethod
     def match_url_file_name(url_list, file_name_list):
@@ -489,7 +510,7 @@ class WebScrapper(object):
     '''
 
     def load_multiple_html(self, url_list, file_name_list, file_path, static=True, html_checker=None, asyn=True,
-                           renew_ip=False, log_only=True):
+                           renew_ip=False, cloudflare=False, log_only=True):
         self.clear_fail_load_list()
         url_file_dict = self.match_url_file_name(url_list, file_name_list)
         if asyn:
@@ -502,12 +523,13 @@ class WebScrapper(object):
             self.loop.run_until_complete(asyncio.gather(*tasks))
         else:
             def load_save_html(url):
-                resp = self.load_html(url, static, html_checker, renew_ip)
+                resp = self.load_html(url, static, html_checker, renew_ip, cloudflare)
                 if resp['ok']:
                     file_name = url_file_dict[url]
                     self.save_html(resp['message'], file_path, file_name)
             list(map(load_save_html, tqdm.tqdm(url_list)))
-        self.notify_ratio_fail_url(url_list, log_only)
+        # TODO: temporary suspend notify
+        # self.notify_ratio_fail_url(url_list, log_only)
         self.log_fail_html(True)
         self.save_fail_load_list()
 
@@ -530,12 +552,13 @@ class WebScrapper(object):
                     file_name = url_file_dict[url]
                     self.save_html(resp['message'], file_path, file_name)
             list(map(browse_save_html, tqdm.tqdm(url_list)))
-        self.notify_ratio_fail_url(url_list, log_only)
+        # TODO: temporary suspend notify
+        # self.notify_ratio_fail_url(url_list, log_only)
         self.log_fail_html(False)
         self.save_fail_load_list()
 
     def load_multiple_api(self, method, url_list, file_name_list, file_path, params=None, api_checker=None,
-                          renew_ip=False, asyn=True, log_only=True, **kwargs):
+                          renew_ip=False, cloudflare=False, asyn=True, log_only=True, **kwargs):
         self.clear_fail_load_list()
         url_file_dict = self.match_params_file_name(url_list, params, file_name_list)
         if asyn:
@@ -553,7 +576,7 @@ class WebScrapper(object):
             self.loop.run_until_complete(asyncio.gather(*tasks))
         else:
             def api_call_save(url, param):
-                resp = self.api_call(method, url, param, api_checker, renew_ip, **kwargs)
+                resp = self.api_call(method, url, param, api_checker, renew_ip, cloudflare, **kwargs)
                 if resp['ok']:
                     file_name = url_file_dict[self.extend_url(url, param)]
                     self.save_api(resp['message'], file_path, file_name)
@@ -561,7 +584,8 @@ class WebScrapper(object):
                 list(map(lambda u: api_call_save(u, params), tqdm.tqdm(url_list)))
             else:
                 list(map(api_call_save, tqdm.tqdm(url_list), params))
-        self.notify_ratio_fail_url(url_list, log_only)
+        # TODO: temporary suspend notify
+        # self.notify_ratio_fail_url(url_list, log_only)
         self.log_fail_html(True)
         self.save_fail_load_list()
 

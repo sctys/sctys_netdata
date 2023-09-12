@@ -10,7 +10,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 from netdata_setting import WebScrapperSetting
-from fake_useragent import UserAgent
+#from fake_useragent import UserAgent
 
 
 def message_checker(response, html_checker=None):
@@ -51,9 +51,9 @@ def extract_text_from_html(html, element=None, index=0):
     return text
 
 
-def get_random_user_agent():
-    ua = UserAgent()
-    return ua.random
+#def get_random_user_agent():
+#    ua = UserAgent()
+#    return ua.random
 
 
 async def no_auth(websocket):
@@ -101,7 +101,7 @@ class ResponseChecker(object):
             return {'status': False, 'message': 'Key {} not exist'.format(key_list[0])}
         for ind, key in enumerate(key_list[:-1]):
             outer_key = key_list[ind]
-            inner_key = key_list[ind - 1]
+            inner_key = key_list[ind + 1]
             if inner_key not in data[outer_key]:
                 return {'status': False, 'message': 'Key {} not exist'.format(key)}
             data = data[outer_key]
