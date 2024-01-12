@@ -35,6 +35,7 @@ class WebScrapper(object):
     NUM_RETRY = 3
     RETRY_SLEEP = 10
     CONSECUTIVE_SLEEP = (0, 30)
+    BROWSER_WAIT = 30
     EXCEPTION_ERROR_CODE = 999
     PREFIX_FAIL_FILE = 'web_scrapper_fail_load_list_'
     PROXIES = {'http': 'socks5://127.0.0.1:9050', 'https': 'socks5://127.0.0.1:9050'}
@@ -66,7 +67,23 @@ class WebScrapper(object):
     def set_consecutive_sleep(self, lower_time, upper_time):
         self.CONSECUTIVE_SLEEP = (lower_time, upper_time)
 
-    def get_browser(self, extra_options=None, asyn=False, long_life=False):
+    def set_browser_wait(self, browser_wait):
+        self.BROWSER_WAIT = browser_wait
+
+    @staticmethod
+    def set_browser_header(headers):
+        def interceptor(request):
+            for header_key, header_value in headers.items():
+                if header_key in request.headers:
+                    del request.headers[header_key]
+                    request.headers[header_key] = header_value
+        return interceptor
+
+    def get_browser(self, headers=None, extra_options=None, extra_experimental_option=None, asyn=False, long_life=False):
+        #if headers is not None:
+        #    web_driver = wire_webdriver
+        #else:
+        #    web_driver = webdriver
         if not asyn:
             options = getattr(webdriver, '{}Options'.format(self.BROWSER.capitalize()))()
             user_agent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36' + \
@@ -85,6 +102,9 @@ class WebScrapper(object):
                 if extra_options is not None:
                     for option in extra_options:
                         options.add_argument(option)
+                if extra_experimental_option is not None:
+                    for experimental_option_key, experimental_option_value in extra_experimental_option.items():
+                        options.add_experimental_option(experimental_option_key, experimental_option_value)
             else:
                 options.add_argument('--headless')
             driver = getattr(webdriver, self.BROWSER.capitalize())(**{'{}_options'.format(self.BROWSER): options})
@@ -97,6 +117,8 @@ class WebScrapper(object):
                     renderer="Intel Iris OpenGL Engine",
                     fix_hairline=True,
                     )
+            if headers is not None:
+                driver.request_interceptor = self.set_browser_header(headers)
             if long_life:
                 self.driver = driver
             else:
@@ -137,9 +159,15 @@ class WebScrapper(object):
                 self.session.close()
             self.session = None
 
-    def set_gateway(self, url):
-        self.gateway = ApiGateway(
-            '/'.join(url.split('/')[:3]), access_key_id=aws_api['id'], access_key_secret=aws_api['secret'])
+    def set_gateway(self, url, regions=None):
+        if regions is None:
+            self.gateway = ApiGateway(
+                '/'.join(url.split('/')[:3]), access_key_id=aws_api['id'], access_key_secret=aws_api['secret'])
+        else:
+            self.gateway = ApiGateway(
+                '/'.join(url.split('/')[:3]), access_key_id=aws_api['id'], access_key_secret=aws_api['secret'],
+                regions=regions
+            )
         self.gateway.start()
 
     def close_gateway(self):
@@ -231,8 +259,8 @@ class WebScrapper(object):
                     response = await self._async_load_html_with_session(s, url, static)
         return response
 
-    def _browse_html(self, url, extra_action=None, *args):
-        with self.get_browser() as d:
+    def _browse_html(self, url, headers=None, extra_options=None, extra_experimental_option=None, extra_action=None, *args):
+        with self.get_browser(headers=headers, extra_options=extra_options, extra_experimental_option=extra_experimental_option) as d:
             response = self._browse_html_with_driver(d, url, extra_action, *args)
         return response
 
@@ -240,6 +268,7 @@ class WebScrapper(object):
         if extra_action is None:
             extra_action = BrowserAction.dummy_action
         try:
+            driver.set_page_load_timeout(self.BROWSER_WAIT)
             driver.get(url)
             driver = extra_action(driver, *args)
             response = {'ok': True, 'message': driver.page_source, 'url': url}
@@ -404,11 +433,11 @@ class WebScrapper(object):
         await asyncio.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    def browser_simulator(self, url, extra_action=None, *args, html_checker=None):
+    def browser_simulator(self, url, headers=None, extra_options=None, extra_experimental_option=None, extra_action=None, *args, html_checker=None):
         if self.driver is None:
             response = retry_wrapper(
                 self._browse_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
-                url, extra_action, *args)
+                url, headers, extra_options, extra_experimental_option, extra_action, *args)
         else:
             response = retry_wrapper(
                 self._browse_html_with_driver, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP,
@@ -533,7 +562,8 @@ class WebScrapper(object):
         self.log_fail_html(True)
         self.save_fail_load_list()
 
-    def browse_multiple_html(self, url_list, file_name_list, file_path, extra_action=None, *args, html_checker=None,
+    def browse_multiple_html(self, url_list, file_name_list, file_path, headers=None, extra_options=None, extra_experimental_option=None,
+                             extra_action=None, *args, html_checker=None,
                              asyn=True, log_only=True):
         self.clear_fail_load_list()
         url_file_dict = self.match_url_file_name(url_list, file_name_list)
@@ -547,7 +577,7 @@ class WebScrapper(object):
             self.loop.run_until_complete(asyncio.gather(*tasks))
         else:
             def browse_save_html(url):
-                resp = self.browser_simulator(url, extra_action, *args, html_checker=html_checker)
+                resp = self.browser_simulator(url, headers, extra_options, extra_experimental_option, extra_action, *args, html_checker=html_checker)
                 if resp['ok']:
                     file_name = url_file_dict[url]
                     self.save_html(resp['message'], file_path, file_name)

@@ -93,17 +93,20 @@ class ResponseChecker(object):
 
     @ staticmethod
     def check_api_result_has_content(data, key_list):
-        if isinstance(data, str):
-            data = json.loads(data)
-        elif isinstance(data, bytes):
-            data = json.load(data)
+        try:
+            if isinstance(data, str):
+                data = json.loads(data)
+            elif isinstance(data, bytes):
+                data = json.load(data)
+        except json.decoder.JSONDecodeError:
+            return {'status': False, 'message': 'Improper json text {}'.format(data), 'terminate': False}
         if key_list[0] not in data:
             return {'status': False, 'message': 'Key {} not exist'.format(key_list[0])}
         for ind, key in enumerate(key_list[:-1]):
             outer_key = key_list[ind]
             inner_key = key_list[ind + 1]
             if inner_key not in data[outer_key]:
-                return {'status': False, 'message': 'Key {} not exist'.format(key)}
+                return {'status': False, 'message': 'Key {} not exist'.format(inner_key)}
             data = data[outer_key]
         data = data[key_list[-1]]
         if data is not None and len(data) > 0:
@@ -118,12 +121,38 @@ class ResponseChecker(object):
         else:
             return {'status': False, 'message': 'Text {} does not exist'.format(text)}
 
+    @staticmethod
+    def check_api_text_not_exist(data, text):
+        if text not in data:
+            return {'status': True}
+        else:
+            return {'status': False, 'message': 'Text {} exist'.format(text)}
+
     @ staticmethod
     def check_either_api_text_exist(data, text_list):
         for text in text_list:
             if text in data:
                 return {'status': True}
         return {'status': False, 'message': 'None of {} exist'.format(','.join(text_list))}
+
+    @ staticmethod
+    def check_api_text_not_empty(data):
+        if len(data) > 0:
+            return {'status': True}
+        return {'status': False, 'message': 'data is empty'}
+
+    @staticmethod
+    def check_api_data_not_empty(data):
+        try:
+            if isinstance(data, str):
+                data = json.loads(data)
+            elif isinstance(data, bytes):
+                data = json.load(data)
+        except json.decoder.JSONDecodeError:
+            return {'status': False, 'message': 'Improper json text {}'.format(data), 'terminate': False}
+        if len(data) > 0:
+            return {'status': True}
+        return {'status': False, 'message': 'data is empty'}
 
     @ staticmethod
     def check_html_element_exist(html, element, min_times=1):
@@ -211,7 +240,7 @@ class BrowserAction(object):
     @staticmethod
     def wait_for_text(driver, element, text, browser_wait):
         WebDriverWait(driver, browser_wait).until(
-            EC.text_to_be_present_in_element(element, text))
+            EC.text_to_be_present_in_element((By.CSS_SELECTOR, element), text))
         return driver
 
     @ staticmethod
