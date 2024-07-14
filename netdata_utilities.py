@@ -83,6 +83,8 @@ class ResponseChecker(object):
                 data = json.load(data)
         except json.decoder.JSONDecodeError:
             return {'status': False, 'message': 'Improper json text {}'.format(data), 'terminate': False}
+        if data is None:
+            return {'status': False, 'message': 'The data is null'}
         if key in data and (value is None or data[key] == value):
             return {'status': True}
         else:
@@ -100,6 +102,8 @@ class ResponseChecker(object):
                 data = json.load(data)
         except json.decoder.JSONDecodeError:
             return {'status': False, 'message': 'Improper json text {}'.format(data), 'terminate': False}
+        if data is None:
+            return {'status': False, 'message': 'The data is null'}
         if key_list[0] not in data:
             return {'status': False, 'message': 'Key {} not exist'.format(key_list[0])}
         for ind, key in enumerate(key_list[:-1]):
@@ -109,7 +113,7 @@ class ResponseChecker(object):
                 return {'status': False, 'message': 'Key {} not exist'.format(inner_key)}
             data = data[outer_key]
         data = data[key_list[-1]]
-        if data is not None and len(data) > 0:
+        if data and data is not None and len(data) > 0:
             return {'status': True}
         else:
             return {'status': False, 'message': 'Key {} has no content'.format(key_list[-1])}
@@ -150,6 +154,8 @@ class ResponseChecker(object):
                 data = json.load(data)
         except json.decoder.JSONDecodeError:
             return {'status': False, 'message': 'Improper json text {}'.format(data), 'terminate': False}
+        if data is None:
+            return {'status': False, 'message': 'The data is null'}
         if len(data) > 0:
             return {'status': True}
         return {'status': False, 'message': 'data is empty'}

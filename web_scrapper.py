@@ -1,4 +1,6 @@
 from requests_html import HTMLSession, AsyncHTMLSession
+from curl_cffi import requests as crequests
+import hrequests
 from selenium import webdriver
 from selenium_stealth import stealth
 import asyncio
@@ -23,6 +25,7 @@ from requests_ip_rotator import ApiGateway
 from cloudscraper import CloudScraper
 from password import tor_password
 from aws_api_ip_rotate import aws_api
+from private_proxy import WebSharePrivateProxy
 from netdata_utilities import html_checker_wrapper, randomize_consecutive_sleep, ResponseChecker, BrowserAction
 
 
@@ -53,9 +56,10 @@ class WebScrapper(object):
         self.browser = None
         self.notifier = None
         self.gateway = None
+        self.proxy = WebSharePrivateProxy()
         self.io = FileIO(project, logger)
-        self.loop = asyncio.get_event_loop()
-        self.sema = asyncio.Semaphore(self.SEMAPHORE)
+        self.loop = None # asyncio.get_event_loop()
+        self.sema = None # asyncio.Semaphore(self.SEMAPHORE)
         self.fail_load_html = []
 
     def set_num_retry(self, num_retry):
@@ -69,6 +73,9 @@ class WebScrapper(object):
 
     def set_browser_wait(self, browser_wait):
         self.BROWSER_WAIT = browser_wait
+
+    def set_proxy_refresh_frequency(self, refresh_frequency):
+        self.proxy.set_refresh_frequency(refresh_frequency)
 
     @staticmethod
     def set_browser_header(headers):
@@ -86,12 +93,12 @@ class WebScrapper(object):
         #    web_driver = webdriver
         if not asyn:
             options = getattr(webdriver, '{}Options'.format(self.BROWSER.capitalize()))()
-            user_agent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36' + \
-                ' (KHTML, like Gecko) Chrome/98.0.4758.80 Safari/537.36'
+            user_agent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
             if self.BROWSER == 'chrome':
                 options.add_argument('--no-sandbox')
-                options.add_argument('--headless')
                 options.add_argument('--window-size=1920,1080')
+                options.add_argument("--start-maximized")
+                options.add_argument('--headless=new')
                 options.add_argument('--user-agent={}'.format(user_agent))
                 options.add_argument('--disable-blink-features=AutomationControlled')
                 options.add_argument('--disable-gpu')
@@ -117,6 +124,7 @@ class WebScrapper(object):
                     renderer="Intel Iris OpenGL Engine",
                     fix_hairline=True,
                     )
+            driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             if headers is not None:
                 driver.request_interceptor = self.set_browser_header(headers)
             if long_life:
@@ -140,12 +148,16 @@ class WebScrapper(object):
     def get_notifier(self):
         self.notifier = get_notifier(self.NOTIFIER, self.project, self.logger)
 
-    def set_session(self, asyn=False, cloudflare=False):
+    def set_session(self, asyn=False, cloudflare=False, hreq=False, curl=False):
         if asyn:
             self.asession = AsyncHTMLSession()
         else:
             if cloudflare:
-                self.session = CloudScraper()
+                self.session = CloudScraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+            elif hreq:
+                self.session = hrequests.Session()
+            elif curl:
+                self.session = crequests.Session(impersonate="chrome")
             else:
                 self.session = HTMLSession()
 
@@ -219,15 +231,31 @@ class WebScrapper(object):
             response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
-    def _load_html(self, url, static=True, renew_ip=False, cloudflare=False):
+    def _load_html(self, url, static=True, renew_ip=False, cloudflare=False, hreq=False, curl=False, impersonate=True):
         if renew_ip:
-            with ApiGateway('/'.join(url.split('/')[:3]), access_key_id=aws_api['id'],
-                            access_key_secret=aws_api['secret']) as g, HTMLSession() as s:
-                s.mount(url, g)
-                response = self._load_html_with_session(s, url, static)
+            if cloudflare:
+                with ApiGateway('/'.join(url.split('/')[:3]), access_key_id=aws_api['id'],
+                                access_key_secret=aws_api['secret']) as g, CloudScraper() as s:
+                    s.mount(url, g)
+                    response = self._load_html_with_session(s, url, static)
+            else:
+                with ApiGateway('/'.join(url.split('/')[:3]), access_key_id=aws_api['id'],
+                                access_key_secret=aws_api['secret']) as g, HTMLSession() as s:
+                    s.mount(url, g)
+                    response = self._load_html_with_session(s, url, static)
         elif cloudflare:
-            with CloudScraper() as s:
+            with CloudScraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}) as s:
                 response = self._load_html_with_session(s, url, static)
+        elif hreq:
+            with hrequests.Session() as s:
+                response = self._load_html_with_session(s, url, static)
+        elif curl:
+            if impersonate:
+                with crequests.Session(impersonate="chrome") as s:
+                    response = self._load_html_with_session(s, url, static)
+            else:
+                with crequests.Session() as s:
+                    response = self._load_html_with_session(s, url, static)
         else:
             with HTMLSession() as s:
                 response = self._load_html_with_session(s, url, static)
@@ -300,11 +328,11 @@ class WebScrapper(object):
         else:
             return '?'.join([url, urllib.parse.urlencode(params)])
 
-    def _api_call_with_session(self, session, method, url, params=None, **kwargs):
+    def _api_call_with_session(self, session, method, url, params=None, proxies=None, **kwargs):
         if params is None:
             params = {}
         try:
-            data = getattr(session, method)(url, params=params, **kwargs)
+            data = getattr(session, method)(url, params=params, proxies=proxies, **kwargs)
             if data.status_code == 200:
                 if hasattr(data, 'html'):
                     response = {'ok': True, 'message': data.html.html, 'url': self.extend_url(url, params)}
@@ -318,19 +346,42 @@ class WebScrapper(object):
                         'url': self.extend_url(url, params)}
         return response
 
-    def _api_call(self, method, url, params=None, renew_ip=False, cloudflare=False, **kwargs):
+    def _api_call(self, method, url, params=None, renew_ip=False, cloudflare=False, hreq=False, curl=False, impersonate=True, proxy=False, **kwargs):
         if renew_ip:
-            with ApiGateway('/'.join(url.split('/')[:3]), access_key_id=aws_api['id'],
-                            access_key_secret=aws_api['secret']) as g:
-                with HTMLSession() as s:
-                    s.mount(url, g)
-                    response = self._api_call_with_session(s, method, url, params, **kwargs)
-        elif cloudflare:
-            with CloudScraper() as s:
-                response = self._api_call_with_session(s, method, url, params, **kwargs)
+            if cloudflare:
+                with ApiGateway('/'.join(url.split('/')[:3]), access_key_id=aws_api['id'],
+                                access_key_secret=aws_api['secret']) as g:
+                    with CloudScraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}) as s:
+                        s.mount(url, g)
+                        response = self._api_call_with_session(s, method, url, params, **kwargs)
+            else:
+                with ApiGateway('/'.join(url.split('/')[:3]), access_key_id=aws_api['id'],
+                                access_key_secret=aws_api['secret']) as g:
+                    with HTMLSession() as s:
+                        s.mount(url, g)
+                        response = self._api_call_with_session(s, method, url, params, **kwargs)
         else:
-            with HTMLSession() as s:
-                response = self._api_call_with_session(s, method, url, params, **kwargs)
+            if proxy:
+                proxies = self.proxy.generate_proxy()
+                #url = url.replace(self.proxy.HTTPS, self.proxy.HTTP)
+            else:
+                proxies = None
+            if cloudflare:
+                with CloudScraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}) as s:
+                    response = self._api_call_with_session(s, method, url, params, proxies, **kwargs)
+            elif hreq:
+                with hrequests.Session() as s:
+                    response = self._api_call_with_session(s, method, url, params, proxies, **kwargs)
+            elif curl:
+                if impersonate:
+                    with crequests.Session(impersonate="chrome") as s:
+                        response = self._api_call_with_session(s, method, url, params, proxies, **kwargs)
+                else:
+                    with crequests.Session() as s:
+                        response = self._api_call_with_session(s, method, url, params, proxies, **kwargs)
+            else:
+                with HTMLSession() as s:
+                    response = self._api_call_with_session(s, method, url, params, proxies, **kwargs)
         return response
 
     async def _async_api_call_with_session(self, session, method, url, params=None, **kwargs):
@@ -409,10 +460,10 @@ class WebScrapper(object):
             message = 'The urls starting with {} has {} out of {} fail url'.format(url_list[0], no_fail_url, no_url)
             self.notifier.retry_send_message(message, log_only)
 
-    def load_html(self, url, static=True, html_checker=None, renew_ip=False, cloudflare=False):
+    def load_html(self, url, static=True, html_checker=None, renew_ip=False, cloudflare=False, hreq=False, curl=False, impersonate=True,):
         response = retry_wrapper(
             self._load_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
-            url, static, renew_ip, cloudflare)
+            url, static, renew_ip, cloudflare, hreq, curl, impersonate)
         if response['ok']:
             self.logger.debug('{} loaded'.format(response['url']))
         else:
@@ -464,17 +515,23 @@ class WebScrapper(object):
         await asyncio.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    def api_call(self, method, url, params=None, api_checker=None, renew_ip=False, cloudflare=False, **kwargs):
+    def api_call(self, method, url, params=None, api_checker=None, renew_ip=False, cloudflare=False, hreq=False, curl=False, impersonate=True, proxy=False, **kwargs):
         if self.session is None:
             response = retry_wrapper(
                 self._api_call, html_checker_wrapper(api_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
-                method, url, params, renew_ip, cloudflare, **kwargs)
+                method, url, params, renew_ip, cloudflare, hreq, curl, impersonate, proxy, **kwargs)
         else:
             if self.gateway is not None:
                 self.session.mount(url, self.gateway)
+                proxies = None
+            elif proxy:
+                proxies = self.proxy.generate_proxy()
+                #url = url.replace(self.proxy.HTTPS, self.proxy.HTTP)
+            else:
+                proxies = None
             response = retry_wrapper(
                 self._api_call_with_session, html_checker_wrapper(api_checker), self.NUM_RETRY, self.RETRY_SLEEP,
-                self.logger)(self.session, method, url, params, **kwargs)
+                self.logger)(self.session, method, url, params, proxies, **kwargs)
         if response['ok']:
             self.logger.debug('{} loaded'.format(response['url']))
         else:
@@ -502,13 +559,13 @@ class WebScrapper(object):
         await asyncio.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    def save_html(self, html, file_path, file_name, **kwargs):
-        self.io.save_file(html, file_path, file_name, 'html', **kwargs)
+    def save_html(self, html, file_path, file_name, count_file, **kwargs):
+        self.io.save_file(html, file_path, file_name, 'html', count_file, **kwargs)
         self.io.notify_fail_file(True)
         self.io.clear_fail_save_list()
 
-    def save_api(self, data, file_path, file_name, **kwargs):
-        self.io.save_file(data, file_path, file_name, 'txt', **kwargs)
+    def save_api(self, data, file_path, file_name, count_file, **kwargs):
+        self.io.save_file(data, file_path, file_name, 'txt', count_file, **kwargs)
         self.io.notify_fail_file(True)
         self.io.clear_fail_save_list()
 
@@ -539,7 +596,7 @@ class WebScrapper(object):
     '''
 
     def load_multiple_html(self, url_list, file_name_list, file_path, static=True, html_checker=None, asyn=True,
-                           renew_ip=False, cloudflare=False, log_only=True):
+                           renew_ip=False, cloudflare=False, hreq=False, curl=False, impersonate=True, log_only=True):
         self.clear_fail_load_list()
         url_file_dict = self.match_url_file_name(url_list, file_name_list)
         if asyn:
@@ -547,20 +604,20 @@ class WebScrapper(object):
                 resp = await self.async_load_html(url, static, html_checker, renew_ip)
                 if resp['ok']:
                     file_name = url_file_dict[url]
-                    self.save_html(resp['message'], file_path, file_name)
+                    self.save_html(resp['message'], file_path, file_name, count_file=False)
             tasks = [asyncio.ensure_future(async_load_save_html(url)) for url in url_list]
             self.loop.run_until_complete(asyncio.gather(*tasks))
         else:
             def load_save_html(url):
-                resp = self.load_html(url, static, html_checker, renew_ip, cloudflare)
+                resp = self.load_html(url, static, html_checker, renew_ip, cloudflare, hreq, curl, impersonate)
                 if resp['ok']:
                     file_name = url_file_dict[url]
-                    self.save_html(resp['message'], file_path, file_name)
+                    self.save_html(resp['message'], file_path, file_name, count_file=True)
             list(map(load_save_html, tqdm.tqdm(url_list)))
         # TODO: temporary suspend notify
         # self.notify_ratio_fail_url(url_list, log_only)
         self.log_fail_html(True)
-        self.save_fail_load_list()
+        #self.save_fail_load_list()
 
     def browse_multiple_html(self, url_list, file_name_list, file_path, headers=None, extra_options=None, extra_experimental_option=None,
                              extra_action=None, *args, html_checker=None,
@@ -572,7 +629,7 @@ class WebScrapper(object):
                 resp = await self.async_browser_simulator(url, extra_action, *args, html_checker=html_checker)
                 if resp['ok']:
                     file_name = url_file_dict[url]
-                    self.save_html(resp['message'], file_path, file_name)
+                    self.save_html(resp['message'], file_path, file_name, count_file=False)
             tasks = [asyncio.ensure_future(async_browse_save_html(url)) for url in url_list]
             self.loop.run_until_complete(asyncio.gather(*tasks))
         else:
@@ -580,15 +637,15 @@ class WebScrapper(object):
                 resp = self.browser_simulator(url, headers, extra_options, extra_experimental_option, extra_action, *args, html_checker=html_checker)
                 if resp['ok']:
                     file_name = url_file_dict[url]
-                    self.save_html(resp['message'], file_path, file_name)
+                    self.save_html(resp['message'], file_path, file_name, count_file=True)
             list(map(browse_save_html, tqdm.tqdm(url_list)))
         # TODO: temporary suspend notify
         # self.notify_ratio_fail_url(url_list, log_only)
         self.log_fail_html(False)
-        self.save_fail_load_list()
+        #self.save_fail_load_list()
 
     def load_multiple_api(self, method, url_list, file_name_list, file_path, params=None, api_checker=None,
-                          renew_ip=False, cloudflare=False, asyn=True, log_only=True, **kwargs):
+                          renew_ip=False, cloudflare=False, hreq=False, curl=False, impersonate=True, proxy=False, asyn=True, log_only=True, **kwargs):
         self.clear_fail_load_list()
         url_file_dict = self.match_params_file_name(url_list, params, file_name_list)
         if asyn:
@@ -606,10 +663,10 @@ class WebScrapper(object):
             self.loop.run_until_complete(asyncio.gather(*tasks))
         else:
             def api_call_save(url, param):
-                resp = self.api_call(method, url, param, api_checker, renew_ip, cloudflare, **kwargs)
+                resp = self.api_call(method, url, param, api_checker, renew_ip, cloudflare, hreq, curl, impersonate, proxy, **kwargs)
                 if resp['ok']:
                     file_name = url_file_dict[self.extend_url(url, param)]
-                    self.save_api(resp['message'], file_path, file_name)
+                    self.save_api(resp['message'], file_path, file_name, count_file=True)
             if not isinstance(params, list):
                 list(map(lambda u: api_call_save(u, params), tqdm.tqdm(url_list)))
             else:
@@ -617,7 +674,7 @@ class WebScrapper(object):
         # TODO: temporary suspend notify
         # self.notify_ratio_fail_url(url_list, log_only)
         self.log_fail_html(True)
-        self.save_fail_load_list()
+        #self.save_fail_load_list()
 
     '''
     def retry_load_multiple_html(self, html_checker=None, file_name=None, asyn=True, verbose=False):
