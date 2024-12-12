@@ -126,6 +126,13 @@ class ResponseChecker(object):
             return {'status': False, 'message': 'Text {} does not exist'.format(text)}
 
     @staticmethod
+    def check_api_text_exist_by_count(data, text, min_times=1):
+        if len(data.split(text)) > min_times:
+            return {'status': True}
+        else:
+            return {'status': False, 'message': 'Text {} does not exist'.format(text)}
+
+    @staticmethod
     def check_api_text_not_exist(data, text):
         if text not in data:
             return {'status': True}

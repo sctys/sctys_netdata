@@ -56,7 +56,7 @@ class WebScrapper(object):
         self.browser = None
         self.notifier = None
         self.gateway = None
-        self.proxy = WebSharePrivateProxy()
+        self.proxy = None # WebSharePrivateProxy()
         self.io = FileIO(project, logger)
         self.loop = None # asyncio.get_event_loop()
         self.sema = None # asyncio.Semaphore(self.SEMAPHORE)
@@ -76,6 +76,10 @@ class WebScrapper(object):
 
     def set_proxy_refresh_frequency(self, refresh_frequency):
         self.proxy.set_refresh_frequency(refresh_frequency)
+
+    def set_proxy(self):
+        if self.proxy is None:
+            self.proxy = WebSharePrivateProxy(self.logger)
 
     @staticmethod
     def set_browser_header(headers):
@@ -362,6 +366,7 @@ class WebScrapper(object):
                         response = self._api_call_with_session(s, method, url, params, **kwargs)
         else:
             if proxy:
+                self.set_proxy()
                 proxies = self.proxy.generate_proxy()
                 #url = url.replace(self.proxy.HTTPS, self.proxy.HTTP)
             else:
@@ -460,6 +465,15 @@ class WebScrapper(object):
             message = 'The urls starting with {} has {} out of {} fail url'.format(url_list[0], no_fail_url, no_url)
             self.notifier.retry_send_message(message, log_only)
 
+    @staticmethod
+    def get_redirect_url(url):
+        with HTMLSession() as s:
+            html = s.get(url)
+        redirect_url = html.url
+        if redirect_url[-1] != '/':
+            redirect_url += '/'
+        return redirect_url
+
     def load_html(self, url, static=True, html_checker=None, renew_ip=False, cloudflare=False, hreq=False, curl=False, impersonate=True,):
         response = retry_wrapper(
             self._load_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
@@ -525,6 +539,7 @@ class WebScrapper(object):
                 self.session.mount(url, self.gateway)
                 proxies = None
             elif proxy:
+                self.set_proxy()
                 proxies = self.proxy.generate_proxy()
                 #url = url.replace(self.proxy.HTTPS, self.proxy.HTTP)
             else:

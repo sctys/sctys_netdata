@@ -7,21 +7,24 @@ import datetime
 
 class WebSharePrivateProxy:
 
-    PROXY_LIST_URL = "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page=1&page_size=25"
+    PROXY_LIST_URL = "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page=1&valid=true&page_size=100"
     PLAN_URL = "https://proxy.webshare.io/api/v2/subscription/plan/"
     PROXY_HEADER = {"Authorization": f"Token {webshare_token}"}
     RESULTS = "results"
     USER_NAME = "username"
     PASSWORD = "password"
     ADDRESS = "proxy_address"
+    VALID = "valid"
     PORT = "port"
     HTTP = "http://"
     HTTPS = "https://"
     ID = 'id'
     AUTOMATIC_REFRESH_NEXT_AT = "automatic_refresh_next_at"
-    NUM_RETRY = 3
+    NUM_RETRY = 30
+    REFRESH_PERIOD_MINUTE = 30
 
-    def __init__(self):
+    def __init__(self, logger):
+        self.logger = logger
         self.full_list = []
         self.active_list = []
         self.last_update = None
@@ -45,18 +48,18 @@ class WebSharePrivateProxy:
                 proxy_list = requests.get(self.PROXY_LIST_URL, headers=self.PROXY_HEADER, timeout=30).json()
                 if self.RESULTS in proxy_list:
                     count = self.NUM_RETRY
-            except Exception:
+                    self.logger.debug("Proxy list updated")
+            except Exception as e:
+                self.logger.error("Unable to get proxy list: {}".format(e))
+                time.sleep(1)
                 count += 1
         if proxy_list is not None and self.RESULTS in proxy_list:
             proxy_list = proxy_list[self.RESULTS]
-            self.full_list = [self._parse_proxy_data(proxy_data) for proxy_data in proxy_list]
+            self.full_list = [self._parse_proxy_data(proxy_data) for proxy_data in proxy_list if proxy_data[self.VALID]]
             self.last_update = time.time()
-            self.get_next_rotate_time()
             self.reset_active_list()
-        else:
-            self.full_list = None
-            self.last_update = None
-            self.next_refresh_time = None
+            self.logger.debug("Number of proxy: {}".format(len(self.full_list)))
+            self.logger.debug("Next update time: {}".format(self.next_refresh_time))
 
     def _parse_plan_id(self, plan_data):
         plan_id = plan_data[self.ID]
@@ -76,7 +79,10 @@ class WebSharePrivateProxy:
                 plan_list = requests.get(self.PLAN_URL, headers=self.PROXY_HEADER, timeout=30).json()
                 if self.RESULTS in plan_list:
                     count = self.NUM_RETRY
-            except Exception:
+                    self.logger.debug("Plan data loaded")
+            except Exception as e:
+                self.logger.error("Unable to get plan data. {}".format(e))
+                time.sleep(1)
                 count += 1
         if plan_list is not None and self.RESULTS in plan_list:
             plan_list = plan_list[self.RESULTS]
@@ -90,7 +96,10 @@ class WebSharePrivateProxy:
                     try:
                         plan_data = requests.get(plan_url, headers=self.PROXY_HEADER, timeout=30).json()
                         count = self.NUM_RETRY
-                    except Exception:
+                        self.logger.debug("Next update time loaded")
+                    except Exception as e:
+                        self.logger.error("Unable to get next update time. {}".format(e))
+                        time.sleep(1)
                         count += 1
                 if plan_data is not None:
                     next_refresh = self._parse_next_auto_refresh(plan_data)
@@ -106,15 +115,19 @@ class WebSharePrivateProxy:
         self.active_list = self.full_list.copy()
 
     def check_if_refresh_list(self):
-        if self.full_list is None:
+        if len(self.full_list) == 0:
             self.get_proxy_list()
-            return
         current_time = time.time()
+        if self.last_update is None or current_time - self.last_update > self.REFRESH_PERIOD_MINUTE * 60:
+            self.logger.debug("Refresh proxy list because last update is older than {} minutes".format(self.REFRESH_PERIOD_MINUTE))
+            self.get_proxy_list()
         if self.next_refresh_time is not None:
             if current_time > self.next_refresh_time:
+                self.logger.debug("Refresh proxy because next refresh time is expired")
                 time.sleep(60)
                 self.get_proxy_list()
-                self.last_update = time.time()
+        if self.next_refresh_time is None or self.last_update > self.next_refresh_time:
+            self.get_next_rotate_time()
 
     def generate_proxy(self, rand=True):
         self.check_if_refresh_list()
