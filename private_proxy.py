@@ -1,4 +1,5 @@
 from webshare_token import webshare_token
+from urllib.parse import urlparse
 import requests
 import random
 import time
@@ -7,7 +8,7 @@ import datetime
 
 class WebSharePrivateProxy:
 
-    PROXY_LIST_URL = "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page=1&valid=true&page_size=100"
+    PROXY_LIST_URL = "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page=1&valid=true&page_size=100"  # format
     PLAN_URL = "https://proxy.webshare.io/api/v2/subscription/plan/"
     PROXY_HEADER = {"Authorization": f"Token {webshare_token}"}
     RESULTS = "results"
@@ -19,6 +20,8 @@ class WebSharePrivateProxy:
     HTTP = "http://"
     HTTPS = "https://"
     ID = 'id'
+    COUNT = 'count'
+    NEXT = 'next'
     AUTOMATIC_REFRESH_NEXT_AT = "automatic_refresh_next_at"
     NUM_RETRY = 30
     REFRESH_PERIOD_MINUTE = 30
@@ -40,22 +43,48 @@ class WebSharePrivateProxy:
                    self.HTTPS.split(':')[0]: f"{self.HTTP}{user_name}:{password}@{address}:{port}"}
         return proxies
 
+    def parse_proxy(self, proxy):
+        parsed_proxy = urlparse(proxy[self.HTTP.split(':')[0]])
+        proxy_dict = {
+            "server": f"{parsed_proxy.scheme}://{parsed_proxy.hostname}:{parsed_proxy.port}",
+            "username": parsed_proxy.username,
+            "password": parsed_proxy.password
+        }
+        return proxy_dict
+
     def get_proxy_list(self):
         count = 0
         proxy_list = None
+        full_proxy_list = []
         while count < self.NUM_RETRY:
             try:
                 proxy_list = requests.get(self.PROXY_LIST_URL, headers=self.PROXY_HEADER, timeout=30).json()
                 if self.RESULTS in proxy_list:
+                    next_url = proxy_list[self.NEXT]
+                    proxy_list = proxy_list[self.RESULTS]
+                    full_proxy_list += proxy_list
+                    inner_count = 0
+                    while next_url is not None and inner_count < self.NUM_RETRY:
+                        try:
+                            proxy_list = requests.get(next_url, headers=self.PROXY_HEADER, timeout=30).json()
+                            if self.RESULTS in proxy_list:
+                                next_url = proxy_list[self.NEXT]
+                                proxy_list = proxy_list[self.RESULTS]
+                                full_proxy_list += proxy_list
+                            else:
+                                next_url = None
+                        except Exception as e:
+                            self.logger.error("Unable to get proxy list: {}".format(e))
+                            time.sleep(1)
+                            inner_count += 1
                     count = self.NUM_RETRY
                     self.logger.debug("Proxy list updated")
             except Exception as e:
                 self.logger.error("Unable to get proxy list: {}".format(e))
                 time.sleep(1)
                 count += 1
-        if proxy_list is not None and self.RESULTS in proxy_list:
-            proxy_list = proxy_list[self.RESULTS]
-            self.full_list = [self._parse_proxy_data(proxy_data) for proxy_data in proxy_list if proxy_data[self.VALID]]
+        if len(full_proxy_list) > 0:
+            self.full_list = [self._parse_proxy_data(proxy_data) for proxy_data in full_proxy_list if proxy_data[self.VALID]]
             self.last_update = time.time()
             self.reset_active_list()
             self.logger.debug("Number of proxy: {}".format(len(self.full_list)))

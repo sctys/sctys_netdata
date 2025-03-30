@@ -1,3 +1,5 @@
+import datetime
+import requests.utils
 from requests_html import HTMLSession, AsyncHTMLSession
 from curl_cffi import requests as crequests
 import hrequests
@@ -5,6 +7,7 @@ from selenium import webdriver
 from selenium_stealth import stealth
 import asyncio
 from arsenic import browsers, services, get_session
+from playwright.sync_api import sync_playwright
 import urllib
 import json
 import os
@@ -19,6 +22,7 @@ sys.path.append(Path.NOTIFIER_PROJECT)
 from notifiers import get_notifier
 sys.path.append(Path.IO_PROJECT)
 from file_io import FileIO
+from mongodb_io import MongoDBIO
 from stem import Signal
 from stem.control import Controller
 from requests_ip_rotator import ApiGateway
@@ -26,7 +30,7 @@ from cloudscraper import CloudScraper
 from password import tor_password
 from aws_api_ip_rotate import aws_api
 from private_proxy import WebSharePrivateProxy
-from netdata_utilities import html_checker_wrapper, randomize_consecutive_sleep, ResponseChecker, BrowserAction
+from netdata_utilities import (html_checker_wrapper, randomize_consecutive_sleep, ResponseChecker, BrowserAction, PlaywrightAction)
 
 
 class WebScrapper(object):
@@ -58,6 +62,7 @@ class WebScrapper(object):
         self.gateway = None
         self.proxy = None # WebSharePrivateProxy()
         self.io = FileIO(project, logger)
+        self.mongodb_io = MongoDBIO(project, logger)
         self.loop = None # asyncio.get_event_loop()
         self.sema = None # asyncio.Semaphore(self.SEMAPHORE)
         self.fail_load_html = []
@@ -308,6 +313,31 @@ class WebScrapper(object):
             response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
+    def _playwright_browse_with_page(self, page, url, extra_action=None, *args):
+        if extra_action is None:
+            extra_action = PlaywrightAction.dummy_action
+        try:
+            page.goto(url)
+            page = extra_action(page, *args)
+            response = {'ok': True, 'message': page.content(), 'url': url}
+        except Exception as e:
+            response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
+        return response
+
+    def _playwright_browse(self, url, proxy=False, extra_action=None, *args):
+        if proxy:
+            self.set_proxy()
+            proxies = self.proxy.generate_proxy()
+            proxy_dict = self.proxy.parse_proxy(proxies)
+        else:
+            proxy_dict = None
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, proxy=proxy_dict)
+            page = browser.new_page()
+            response = self._playwright_browse_with_page(page, url, extra_action, *args)
+            browser.close()
+        return response
+
     async def _async_browse_html(self, url, async_extra_action=None, *args):
         async with self.sema, get_session(*self.get_browser(True)) as session:
             response = await self._async_browse_html_with_session(session, url, async_extra_action, *args)
@@ -474,6 +504,48 @@ class WebScrapper(object):
             redirect_url += '/'
         return redirect_url
 
+    def get_header_for_requests(self, url, proxy=False):
+        if proxy:
+            self.set_proxy()
+            proxies = self.proxy.generate_proxy()
+            proxy_dict = self.proxy.parse_proxy(proxies)
+        else:
+            proxy_dict = None
+        header_dict = {}
+        try:
+            with sync_playwright() as p:
+                self.logger.debug("Start getting header from {}".format(url))
+                # Launch the browser
+                browser = p.chromium.launch(headless=True, proxy=proxy_dict)
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+                    viewport={"width": 1920, "height": 1080}
+                )  # Create a new browser context
+
+                def log_request(route, request):
+                    url = request.url
+                    header = request.headers
+                    header_dict[url] = header
+                    route.continue_()  # Continue the request without modifications
+
+                # Enable request interception
+
+                context.route("**/*", log_request)
+
+                # Open a new page
+                page = context.new_page()
+
+                page.goto(url, timeout=10000)
+                # Close the browser
+                browser.close()
+            if len(header_dict) > 0:
+                self.logger.debug("Finish getting header from {}".format(url))
+            else:
+                self.logger.error("Fail to get header from {}".format(url))
+        except Exception as e:
+            self.logger.error("Fail to load header from {}. {}".format(url, e))
+        return header_dict
+
     def load_html(self, url, static=True, html_checker=None, renew_ip=False, cloudflare=False, hreq=False, curl=False, impersonate=True,):
         response = retry_wrapper(
             self._load_html, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
@@ -527,6 +599,18 @@ class WebScrapper(object):
             self.logger.error('Fail to load {}. {}'.format(response.get('url', url), response['error']))
             self.fail_load_html.append({'url': url, 'args': args})
         await asyncio.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
+        return response
+
+    def playwright_browse(self, url, proxy=False, extra_action=None, *args, html_checker=None):
+        response = retry_wrapper(
+            self._playwright_browse, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
+            url, proxy, extra_action, *args)
+        if response['ok']:
+            self.logger.debug('{} loaded'.format(response['url']))
+        else:
+            self.logger.error("Fail to load {}. {}".format(response.get('url', url), response['error']))
+            self.fail_load_html.append({'url': url, 'args': args})
+        time.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
     def api_call(self, method, url, params=None, api_checker=None, renew_ip=False, cloudflare=False, hreq=False, curl=False, impersonate=True, proxy=False, **kwargs):
@@ -583,6 +667,12 @@ class WebScrapper(object):
         self.io.save_file(data, file_path, file_name, 'txt', count_file, **kwargs)
         self.io.notify_fail_file(True)
         self.io.clear_fail_save_list()
+    
+    def save_data_to_db(self, data, collection, document):
+        document["data"] = data
+        document["modified"] = datetime.datetime.now(tz=datetime.timezone.utc)
+        keys = [key for key in document.keys() if key not in ['data', 'modified']]
+        self.mongodb_io.insert_document(collection, document, keys)
 
     @ staticmethod
     def match_url_file_name(url_list, file_name_list):
@@ -595,6 +685,18 @@ class WebScrapper(object):
             url_list = [self.extend_url(url, params) for url in url_list]
         assert len(url_list) == len(file_name_list), 'Unequal number of url and file_name'
         return self.match_url_file_name(url_list, file_name_list)
+    
+    @ staticmethod
+    def match_url_document(url_list, document_list):
+        return {url: document for url, document in zip(url_list, document_list)}
+    
+    def match_params_file_name_document(self, url_list, params, document_list):
+        if isinstance(params, list):
+            url_list = [self.extend_url(url, param) for url, param in zip(url_list, params)]
+        elif isinstance(params, dict):
+            url_list = [self.extend_url(url, params) for url in url_list]
+        assert len(url_list) == len(document_list), 'Unequal number of url and file_name'
+        return self.match_url_document(url_list, document_list)
 
     '''
     def save_multiple_html(self, mode, response, file_path, file_name_dict, verbose=False, **kwargs):
@@ -659,6 +761,17 @@ class WebScrapper(object):
         self.log_fail_html(False)
         #self.save_fail_load_list()
 
+    def playwright_browse_multiple_html(self, url_list, file_name_list, file_path, proxy=False, extra_action=None, *args, html_checker=None):
+        self.clear_fail_load_list()
+        url_file_dict = self.match_url_file_name(url_list, file_name_list)
+        def browse_save_html(url):
+            resp = self.playwright_browse(url, proxy, extra_action, *args, html_checker=html_checker)
+            if resp['ok']:
+                file_name = url_file_dict[url]
+                self.save_html(resp['message'], file_path, file_name, count_file=True)
+        list(map(browse_save_html, tqdm.tqdm(url_list)))
+        self.log_fail_html(False)
+
     def load_multiple_api(self, method, url_list, file_name_list, file_path, params=None, api_checker=None,
                           renew_ip=False, cloudflare=False, hreq=False, curl=False, impersonate=True, proxy=False, asyn=True, log_only=True, **kwargs):
         self.clear_fail_load_list()
@@ -690,7 +803,32 @@ class WebScrapper(object):
         # self.notify_ratio_fail_url(url_list, log_only)
         self.log_fail_html(True)
         #self.save_fail_load_list()
+    
+    def playwright_browse_multiple_html_db(self, url_list, document_list, collection, proxy=False, extra_action=None, *args, html_checker=None):
+        self.clear_fail_load_list()
+        url_file_dict = self.match_url_file_name_document(url_list, document_list)
+        def browse_save_html(url):
+            resp = self.playwright_browse(url, proxy, extra_action, *args, html_checker=html_checker)
+            if resp['ok']:
+                document = url_file_dict[url]
+                self.save_data_to_db(resp['message'], collection, document)
+        list(map(browse_save_html, tqdm.tqdm(url_list)))
+        self.log_fail_html(False)
 
+    def load_multiple_api_db(self, method, url_list, document_list, collection, params=None, api_checker=None,
+                          renew_ip=False, cloudflare=False, hreq=False, curl=False, impersonate=True, proxy=False, **kwargs):
+        self.clear_fail_load_list()
+        url_file_dict = self.match_params_file_name_document(url_list, params, document_list)
+        def api_call_save(url, param):
+            resp = self.api_call(method, url, param, api_checker, renew_ip, cloudflare, hreq, curl, impersonate, proxy, **kwargs)
+            if resp['ok']:
+                document = url_file_dict[self.extend_url(url, param)]
+                self.save_data_to_db(resp['message'], collection, document)
+        if not isinstance(params, list):
+            list(map(lambda u: api_call_save(u, params), tqdm.tqdm(url_list)))
+        else:
+            list(map(api_call_save, tqdm.tqdm(url_list), params))
+        self.log_fail_html(True)
     '''
     def retry_load_multiple_html(self, html_checker=None, file_name=None, asyn=True, verbose=False):
         if file_name is not None:

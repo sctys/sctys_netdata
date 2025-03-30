@@ -304,3 +304,8 @@ class BrowserAction(object):
         await option_button.click()
         await session.wait_for_element(WebScrapperSetting.WEB_SCRAPPER_BROWSER_WAIT, load_element)
         return session
+
+class PlaywrightAction:
+    @staticmethod
+    def dummy_action(page, *args):
+        return page
