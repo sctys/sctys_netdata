@@ -20,9 +20,9 @@ class WebSharePrivateProxy:
     PORT = "port"
     HTTP = "http://"
     HTTPS = "https://"
-    ID = 'id'
-    COUNT = 'count'
-    NEXT = 'next'
+    ID = "id"
+    COUNT = "count"
+    NEXT = "next"
     AUTOMATIC_REFRESH_NEXT_AT = "automatic_refresh_next_at"
     NUM_RETRY = 30
     REFRESH_PERIOD_MINUTE = 30
@@ -42,26 +42,32 @@ class WebSharePrivateProxy:
         password = proxy_data[self.PASSWORD]
         address = proxy_data[self.ADDRESS]
         port = proxy_data[self.PORT]
-        proxies = {self.HTTP.split(':')[0]: f"{self.HTTP}{user_name}:{password}@{address}:{port}",
-                   self.HTTPS.split(':')[0]: f"{self.HTTP}{user_name}:{password}@{address}:{port}"}
+        proxies = {
+            self.HTTP.split(":")[
+                0
+            ]: f"{self.HTTP}{user_name}:{password}@{address}:{port}",
+            self.HTTPS.split(":")[
+                0
+            ]: f"{self.HTTP}{user_name}:{password}@{address}:{port}",
+        }
         return proxies
 
     def parse_proxy(self, proxy):
-        parsed_proxy = urlparse(proxy[self.HTTP.split(':')[0]])
+        parsed_proxy = urlparse(proxy[self.HTTP.split(":")[0]])
         proxy_dict = {
             "server": f"{parsed_proxy.scheme}://{parsed_proxy.hostname}:{parsed_proxy.port}",
             "username": parsed_proxy.username,
-            "password": parsed_proxy.password
+            "password": parsed_proxy.password,
         }
         return proxy_dict
-    
+
     def add_proxy_block_count(self, proxies):
-        proxy = proxies[self.HTTP.split(':')[0]]
+        proxy = proxies[self.HTTP.split(":")[0]]
         block_count = self.block_proxy_dict.get(proxy, 0)
         self.block_proxy_dict[proxy] = block_count + 1
-    
+
     def check_if_proxy_is_blocked(self, proxies):
-        proxy = proxies[self.HTTP.split(':')[0]]
+        proxy = proxies[self.HTTP.split(":")[0]]
         block_count = self.block_proxy_dict.get(proxy, 0)
         return block_count >= self.BLOCK_COUNT
 
@@ -71,7 +77,9 @@ class WebSharePrivateProxy:
         full_proxy_list = []
         while count < self.NUM_RETRY:
             try:
-                proxy_list = requests.get(self.PROXY_LIST_URL, headers=self.PROXY_HEADER, timeout=30).json()
+                proxy_list = requests.get(
+                    self.PROXY_LIST_URL, headers=self.PROXY_HEADER, timeout=30
+                ).json()
                 if self.RESULTS in proxy_list:
                     next_url = proxy_list[self.NEXT]
                     proxy_list = proxy_list[self.RESULTS]
@@ -79,7 +87,9 @@ class WebSharePrivateProxy:
                     inner_count = 0
                     while next_url is not None and inner_count < self.NUM_RETRY:
                         try:
-                            proxy_list = requests.get(next_url, headers=self.PROXY_HEADER, timeout=30).json()
+                            proxy_list = requests.get(
+                                next_url, headers=self.PROXY_HEADER, timeout=30
+                            ).json()
                             if self.RESULTS in proxy_list:
                                 next_url = proxy_list[self.NEXT]
                                 proxy_list = proxy_list[self.RESULTS]
@@ -97,11 +107,21 @@ class WebSharePrivateProxy:
                 time.sleep(1)
                 count += 1
         if len(full_proxy_list) > 0:
-            full_list = [self._parse_proxy_data(proxy_data) for proxy_data in full_proxy_list if proxy_data[self.VALID]]
-            self.full_list = [proxies for proxies in full_list if not self.check_if_proxy_is_blocked(proxies)]
+            full_list = [
+                self._parse_proxy_data(proxy_data)
+                for proxy_data in full_proxy_list
+                if proxy_data[self.VALID]
+            ]
+            self.full_list = [
+                proxies
+                for proxies in full_list
+                if not self.check_if_proxy_is_blocked(proxies)
+            ]
             self.last_update = time.time()
             self.reset_active_list()
-            self.logger.debug("blocked_proxy_list: {}".format(json.dumps(self.block_proxy_dict)))
+            self.logger.debug(
+                "blocked_proxy_list: {}".format(json.dumps(self.block_proxy_dict))
+            )
             self.logger.debug("Number of proxy: {}".format(len(self.full_list)))
             self.logger.debug("Next update time: {}".format(self.next_refresh_time))
 
@@ -120,7 +140,9 @@ class WebSharePrivateProxy:
         plan_list = None
         while count < self.NUM_RETRY:
             try:
-                plan_list = requests.get(self.PLAN_URL, headers=self.PROXY_HEADER, timeout=30).json()
+                plan_list = requests.get(
+                    self.PLAN_URL, headers=self.PROXY_HEADER, timeout=30
+                ).json()
                 if self.RESULTS in plan_list:
                     count = self.NUM_RETRY
                     self.logger.debug("Plan data loaded")
@@ -131,23 +153,33 @@ class WebSharePrivateProxy:
         if plan_list is not None and self.RESULTS in plan_list:
             plan_list = plan_list[self.RESULTS]
             plan_id_list = [self._parse_plan_id(plan_data) for plan_data in plan_list]
-            plan_url_list = [self.PLAN_URL + str(plan_id) + '/' for plan_id in plan_id_list]
+            plan_url_list = [
+                self.PLAN_URL + str(plan_id) + "/" for plan_id in plan_id_list
+            ]
             next_refresh_time = 0
             for plan_url in plan_url_list:
                 count = 0
                 plan_data = None
                 while count < self.NUM_RETRY:
                     try:
-                        plan_data = requests.get(plan_url, headers=self.PROXY_HEADER, timeout=30).json()
+                        plan_data = requests.get(
+                            plan_url, headers=self.PROXY_HEADER, timeout=30
+                        ).json()
                         count = self.NUM_RETRY
                         self.logger.debug("Next update time loaded")
                     except Exception as e:
-                        self.logger.error("Unable to get next update time. {}".format(e))
+                        self.logger.error(
+                            "Unable to get next update time. {}".format(e)
+                        )
                         time.sleep(1)
                         count += 1
                 if plan_data is not None:
                     next_refresh = self._parse_next_auto_refresh(plan_data)
-                    if next_refresh is not None and next_refresh > next_refresh_time and next_refresh > self.last_update:
+                    if (
+                        next_refresh is not None
+                        and next_refresh > next_refresh_time
+                        and next_refresh > self.last_update
+                    ):
                         next_refresh_time = next_refresh
             if next_refresh_time == 0:
                 next_refresh_time = None
@@ -162,8 +194,15 @@ class WebSharePrivateProxy:
         if len(self.full_list) == 0:
             self.get_proxy_list()
         current_time = time.time()
-        if self.last_update is None or current_time - self.last_update > self.REFRESH_PERIOD_MINUTE * 60:
-            self.logger.debug("Refresh proxy list because last update is older than {} minutes".format(self.REFRESH_PERIOD_MINUTE))
+        if (
+            self.last_update is None
+            or current_time - self.last_update > self.REFRESH_PERIOD_MINUTE * 60
+        ):
+            self.logger.debug(
+                "Refresh proxy list because last update is older than {} minutes".format(
+                    self.REFRESH_PERIOD_MINUTE
+                )
+            )
             self.get_proxy_list()
         if self.next_refresh_time is not None:
             if current_time > self.next_refresh_time:
@@ -186,4 +225,3 @@ class WebSharePrivateProxy:
             blocked = self.check_if_proxy_is_blocked(proxy)
             self.active_list.remove(proxy)
         return proxy
-

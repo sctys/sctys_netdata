@@ -15,8 +15,8 @@ class PrivateVPN:
         "Asia_Pacific",
         "Onion_Over_VPN",
         "The_Americas",
-        #"Double_VPN",
-        #"P2P"
+        # "Double_VPN",
+        # "P2P"
     ]
 
     def __init__(self):
@@ -26,7 +26,7 @@ class PrivateVPN:
         self.last_rotate = None
 
     def login_vpn(self):
-        return self._retry_operation(['nordvpn', 'login', '--token', self.__token])
+        return self._retry_operation(["nordvpn", "login", "--token", self.__token])
 
     def rotate_group(self):
         self.group_index += 1
@@ -34,13 +34,15 @@ class PrivateVPN:
             self.group_index = 0
 
     def connect_vpn(self):
-        return self._retry_operation(['nordvpn', 'connect', self.VPN_GROUP[self.group_index]])
+        return self._retry_operation(
+            ["nordvpn", "connect", self.VPN_GROUP[self.group_index]]
+        )
 
     def disconnect_vpn(self):
-        return self._retry_operation(['nordvpn', 'disconnect'])
+        return self._retry_operation(["nordvpn", "disconnect"])
 
     def logout_vpn(self):
-        return self._retry_operation(['nordvpn', 'logout'])
+        return self._retry_operation(["nordvpn", "logout"])
 
     def check_to_rotate(self, num_to_rotate=None, time_to_rotate=None):
         if num_to_rotate is not None:
@@ -73,27 +75,33 @@ class PrivateVPN:
         counter = 0
         while counter < self.NUM_RETRY:
             try:
-                subprocess.run(command_list, capture_output=True, text=True, check=True, timeout=self.TIMEOUT)
+                subprocess.run(
+                    command_list,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=self.TIMEOUT,
+                )
                 return True
             except Exception as e:
-                command_str = ' '.join(command_list)
-                print(f'Unable to run the operation after trial {counter}. {command_str}. {e}')
+                command_str = " ".join(command_list)
+                print(
+                    f"Unable to run the operation after trial {counter}. {command_str}. {e}"
+                )
                 counter += 1
         return False
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     private_vpn = PrivateVPN()
     if private_vpn.login_vpn():
         try:
             for i in range(10):
                 if private_vpn.rotate_vpn(time_to_rotate=60):
                     session = HTMLSession()
-                    result = session.get('http://httpbin.org/ip')
+                    result = session.get("http://httpbin.org/ip")
                     print(result.text)
                     time.sleep(60)
         finally:
             private_vpn.disconnect_vpn()
             private_vpn.logout_vpn()
-
-
