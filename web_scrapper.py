@@ -324,7 +324,7 @@ class WebScrapper(object):
             response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE, 'url': url}
         return response
 
-    def _playwright_browse(self, url, proxy=False, extra_action=None, *args):
+    def _playwright_browse(self, url, proxy=False, extra_action=None, browse_context=None, *args):
         if proxy:
             self.set_proxy()
             proxies = self.proxy.generate_proxy()
@@ -333,7 +333,11 @@ class WebScrapper(object):
             proxy_dict = None
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, proxy=proxy_dict)
-            page = browser.new_page()
+            if browse_context is not None:
+                context = browser.new_context(**browse_context)
+                page = context.new_page()
+            else:
+                page = browser.new_page()
             response = self._playwright_browse_with_page(page, url, extra_action, *args)
             browser.close()
         return response
@@ -375,6 +379,8 @@ class WebScrapper(object):
             else:
                 response = {'ok': False, 'error': data.reason, 'error_code': data.status_code,
                             'url': self.extend_url(url, params)}
+                if (data.status_code == 403 or data.status_code == 429) and proxies is not None:
+                    self.proxy.add_proxy_block_count(proxies)
         except Exception as e:
             response = {'ok': False, 'error': e, 'error_code': self.EXCEPTION_ERROR_CODE,
                         'url': self.extend_url(url, params)}
@@ -601,10 +607,10 @@ class WebScrapper(object):
         await asyncio.sleep(randomize_consecutive_sleep(self.CONSECUTIVE_SLEEP[0], self.CONSECUTIVE_SLEEP[-1]))
         return response
 
-    def playwright_browse(self, url, proxy=False, extra_action=None, *args, html_checker=None):
+    def playwright_browse(self, url, proxy=False, extra_action=None, browser_context=None, *args, html_checker=None):
         response = retry_wrapper(
             self._playwright_browse, html_checker_wrapper(html_checker), self.NUM_RETRY, self.RETRY_SLEEP, self.logger)(
-            url, proxy, extra_action, *args)
+            url, proxy, extra_action, browser_context,*args)
         if response['ok']:
             self.logger.debug('{} loaded'.format(response['url']))
         else:
@@ -669,10 +675,9 @@ class WebScrapper(object):
         self.io.clear_fail_save_list()
     
     def save_data_to_db(self, data, collection, document):
+        keys = document.keys()
         document["data"] = data
-        document["modified"] = datetime.datetime.now(tz=datetime.timezone.utc)
-        keys = [key for key in document.keys() if key not in ['data', 'modified']]
-        self.mongodb_io.insert_document(collection, document, keys)
+        self.mongodb_io.replace_document(collection, document, keys)
 
     @ staticmethod
     def match_url_file_name(url_list, file_name_list):
@@ -690,7 +695,7 @@ class WebScrapper(object):
     def match_url_document(url_list, document_list):
         return {url: document for url, document in zip(url_list, document_list)}
     
-    def match_params_file_name_document(self, url_list, params, document_list):
+    def match_params_document(self, url_list, params, document_list):
         if isinstance(params, list):
             url_list = [self.extend_url(url, param) for url, param in zip(url_list, params)]
         elif isinstance(params, dict):
@@ -806,7 +811,7 @@ class WebScrapper(object):
     
     def playwright_browse_multiple_html_db(self, url_list, document_list, collection, proxy=False, extra_action=None, *args, html_checker=None):
         self.clear_fail_load_list()
-        url_file_dict = self.match_url_file_name_document(url_list, document_list)
+        url_file_dict = self.match_url_document(url_list, document_list)
         def browse_save_html(url):
             resp = self.playwright_browse(url, proxy, extra_action, *args, html_checker=html_checker)
             if resp['ok']:
@@ -818,7 +823,7 @@ class WebScrapper(object):
     def load_multiple_api_db(self, method, url_list, document_list, collection, params=None, api_checker=None,
                           renew_ip=False, cloudflare=False, hreq=False, curl=False, impersonate=True, proxy=False, **kwargs):
         self.clear_fail_load_list()
-        url_file_dict = self.match_params_file_name_document(url_list, params, document_list)
+        url_file_dict = self.match_params_document(url_list, params, document_list)
         def api_call_save(url, param):
             resp = self.api_call(method, url, param, api_checker, renew_ip, cloudflare, hreq, curl, impersonate, proxy, **kwargs)
             if resp['ok']:

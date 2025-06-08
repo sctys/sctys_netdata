@@ -1,5 +1,6 @@
 from webshare_token import webshare_token
 from urllib.parse import urlparse
+import json
 import requests
 import random
 import time
@@ -25,11 +26,13 @@ class WebSharePrivateProxy:
     AUTOMATIC_REFRESH_NEXT_AT = "automatic_refresh_next_at"
     NUM_RETRY = 30
     REFRESH_PERIOD_MINUTE = 30
+    BLOCK_COUNT = 3
 
     def __init__(self, logger):
         self.logger = logger
         self.full_list = []
         self.active_list = []
+        self.block_proxy_dict = {}
         self.last_update = None
         self.next_refresh_time = None
         self.get_proxy_list()
@@ -51,6 +54,16 @@ class WebSharePrivateProxy:
             "password": parsed_proxy.password
         }
         return proxy_dict
+    
+    def add_proxy_block_count(self, proxies):
+        proxy = proxies[self.HTTP.split(':')[0]]
+        block_count = self.block_proxy_dict.get(proxy, 0)
+        self.block_proxy_dict[proxy] = block_count + 1
+    
+    def check_if_proxy_is_blocked(self, proxies):
+        proxy = proxies[self.HTTP.split(':')[0]]
+        block_count = self.block_proxy_dict.get(proxy, 0)
+        return block_count >= self.BLOCK_COUNT
 
     def get_proxy_list(self):
         count = 0
@@ -84,9 +97,11 @@ class WebSharePrivateProxy:
                 time.sleep(1)
                 count += 1
         if len(full_proxy_list) > 0:
-            self.full_list = [self._parse_proxy_data(proxy_data) for proxy_data in full_proxy_list if proxy_data[self.VALID]]
+            full_list = [self._parse_proxy_data(proxy_data) for proxy_data in full_proxy_list if proxy_data[self.VALID]]
+            self.full_list = [proxies for proxies in full_list if not self.check_if_proxy_is_blocked(proxies)]
             self.last_update = time.time()
             self.reset_active_list()
+            self.logger.debug("blocked_proxy_list: {}".format(json.dumps(self.block_proxy_dict)))
             self.logger.debug("Number of proxy: {}".format(len(self.full_list)))
             self.logger.debug("Next update time: {}".format(self.next_refresh_time))
 
@@ -160,12 +175,15 @@ class WebSharePrivateProxy:
 
     def generate_proxy(self, rand=True):
         self.check_if_refresh_list()
-        if len(self.active_list) == 0:
-            self.reset_active_list()
-        if rand:
-            proxy = random.choice(self.active_list)
-        else:
-            proxy = self.active_list[0]
-        self.active_list.remove(proxy)
+        blocked = True
+        while blocked:
+            if len(self.active_list) == 0:
+                self.reset_active_list()
+            if rand:
+                proxy = random.choice(self.active_list)
+            else:
+                proxy = self.active_list[0]
+            blocked = self.check_if_proxy_is_blocked(proxy)
+            self.active_list.remove(proxy)
         return proxy
 
